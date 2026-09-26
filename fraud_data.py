@@ -484,7 +484,7 @@ class RealTimeStreamingEngine:
                             f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
                             f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                             f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                            f"GAT Graph Neural Network risk probability: {gat_prob:.6f} ({risk_tier.upper()} · {risk_score}% confidence)",
+                            f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
                             f"Payment format: {pay_fmt} · Currency: US Dollar ($)",
                         ]
                     }
@@ -506,7 +506,7 @@ class RealTimeStreamingEngine:
                         f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
                         f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                         f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                        f"GAT Graph Neural Network risk probability: {gat_prob:.6f} ({risk_tier.upper()} · {risk_score}% confidence)",
+                        f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
                         f"Payment format: {pay_fmt} · Currency: US Dollar ($)",
                     ]
 
@@ -663,6 +663,7 @@ class RealTimeStreamingEngine:
             entity_id=s_meta["entity_id"],
             gat_prob=inv.get("gat_prob", 0.99),
             gat_signal=inv.get("gat_signal", "HIGH"),
+            risk_score=inv.get("risk_score", 98),
             color="#ef4444",
             hop=0
         )
@@ -695,7 +696,7 @@ class RealTimeStreamingEngine:
             return pd.DataFrame(columns=[
                 "Fan-out Group", "Transaction ID", "Timestamp", "From Account", "From Entity Name",
                 "To Account", "To Entity Name", "Amount Paid", "Payment Currency", "Payment Format",
-                "GAT Probability", "GAT Signal", "Actual Label"
+                "GAT Risk Score", "GAT Signal", "Actual Label"
             ])
         
         proc_lookup = {tx["tx_id"]: tx for tx in self.processed_txs}
@@ -715,10 +716,10 @@ class RealTimeStreamingEngine:
             
             proc = proc_lookup.get(tx_id)
             if proc:
-                gat_prob = f"{proc.get('gat_prob', 0.5):.4f}"
+                gat_score = f"{proc.get('risk_score', 15)}/100"
                 gat_sig = f"{proc.get('risk_tier', 'LOW').upper()} RISK"
             else:
-                gat_prob = "0.0500"
+                gat_score = "15/100"
                 gat_sig = "LOW RISK"
                 
             rows.append({
@@ -732,7 +733,7 @@ class RealTimeStreamingEngine:
                 "Amount Paid": format_currency(amt_paid, pay_curr),
                 "Payment Currency": pay_curr,
                 "Payment Format": pay_fmt,
-                "GAT Probability": gat_prob,
+                "GAT Risk Score": gat_score,
                 "GAT Signal": gat_sig,
                 "Actual Label": "LAUNDERING" if is_laundering else "LEGITIMATE"
             })

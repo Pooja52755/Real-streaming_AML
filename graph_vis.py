@@ -20,9 +20,7 @@ def _build_hover_text(node, data):
         bank_id = data.get("bank_id", "BNK-001")
         entity_id = data.get("entity_id", f"ENT-{node[:8]}")
         gat_signal = data.get("gat_signal", "HIGH")
-        gat_prob = data.get("gat_prob", 0.99)
-        if isinstance(gat_prob, float):
-            gat_prob = f"{gat_prob:.4f}"
+        risk_score = data.get("risk_score", 98)
 
         return (
             f"<b>🔴 SENDER ACCOUNT</b><br>"
@@ -31,7 +29,7 @@ def _build_hover_text(node, data):
             f"Entity ID: {entity_id}<br>"
             f"Bank: {bank_name} (ID: {bank_id})<br>"
             f"GAT Signal: {gat_signal}<br>"
-            f"GAT Probability: {gat_prob}"
+            f"GAT Risk Score: {risk_score}/100"
         )
     else:
         # Hop-1 Receiver Node

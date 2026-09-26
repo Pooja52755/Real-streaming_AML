@@ -597,7 +597,8 @@ if page == "Dashboard":
                 <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #fde68a;padding-top:8px;">
                     Model: <b>{curr_tx.get('model_used', 'GAT AML Model (PyG)')}</b> &nbsp;|&nbsp;
                     Confidence: <b>{curr_tx.get('model_confidence', f'{risk_score}%')}</b> &nbsp;|&nbsp;
-                    Risk Score: <b style="color:{risk_col};">{risk_score}/100</b> (Raw GAT Sigmoid: <code>{curr_tx.get('gat_prob', 0):.6f}</code>)
+                    Risk Score: <b style="color:{risk_col};">{risk_score}/100</b> &nbsp;|&nbsp;
+                    GAT Status: <b style="color:{risk_col};">{risk.upper()} RISK ALERT</b>
                 </div>
             </div>
             """))
