@@ -494,19 +494,7 @@ if page == "Dashboard":
     # ════════════════════════════════════════════════════════════════════
     with col_center:
         if not all_txs:
-            st.html("""
-            <div class="center-card" style="text-align:center;padding:40px 20px;">
-                <div style="font-size:36px;margin-bottom:12px;">🛡️</div>
-                <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:6px;">Real-Time AML Monitoring Active</div>
-                <div style="font-size:13px;color:#64748b;max-width:480px;margin:0 auto 12px auto;line-height:1.5;">
-                    No high or medium risk fan-out clusters detected yet in current graph memory.
-                </div>
-                <div style="font-size:12px;color:#94a3b8;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;max-width:500px;margin:0 auto;">
-                    💡 Use <b>'▶ Step +1'</b> or <b>'⏩ Step +10'</b> in the sidebar to stream transactions from <code>Data/testing_trans.csv</code>.<br>
-                    Single sender transactions start as Low Risk; expanding to 2+ unique receivers triggers fan-out escalation.
-                </div>
-            </div>
-            """)
+            pass
         else:
             curr_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
             if not isinstance(curr_tx, dict) or not curr_tx:
@@ -523,7 +511,6 @@ if page == "Dashboard":
             lead_tx_id = curr_tx.get('lead_tx_id', curr_tx.get('tx_id', f'GROUP-{gid}'))
             sender_acc = curr_tx.get('account', '—')
             sender_name = curr_tx.get('name') or fraud_data.get_customer_profile(sender_acc).get('name', sender_acc)
-            payment_format = curr_tx.get('payment_format', '—')
             first_ts = curr_tx.get('initial_timestamp', curr_tx.get('timestamp', '—'))
             latest_ts = curr_tx.get('latest_timestamp', curr_tx.get('timestamp', '—'))
             ts_display = f"Burst Start: {first_ts} · Latest: {latest_ts}" if first_ts != latest_ts else f"Timestamp: {first_ts}"
@@ -536,8 +523,7 @@ if page == "Dashboard":
                         <span style="font-size:12px;font-weight:500;color:#64748b;margin-left:6px;">{pattern}</span>
                     </div>
                     <div style="font-size:12px;color:#475569;margin-top:2px;">
-                        Sender: <b>{sender_acc}</b> ({sender_name}) ·
-                        {ts_display} · {payment_format}
+                        Sender: <b>{sender_acc}</b> ({sender_name}) · {ts_display}
                     </div>
                 </div>
                 <span class="badge-{risk.lower()}">{risk.upper()} RISK · {risk_score}/100</span>
@@ -583,6 +569,8 @@ if page == "Dashboard":
             xai_extra = "xai-box-high" if is_high else ""
             exps_clean = []
             for e in curr_tx.get("explanations", []):
+                if "payment format" in e.lower() or "currency:" in e.lower():
+                    continue
                 if "risk probability" in e.lower() or "gat graph" in e.lower():
                     exps_clean.append(f"GAT Neural Network Fraud Signal: {risk.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
                 else:
@@ -824,15 +812,11 @@ elif page == "Graph Network":
         default_sel = st.session_state.selected_tx_id
         default_idx = group_options.index(default_sel) if default_sel in group_options else 0
 
-        col_g1, col_g2 = st.columns([2, 1])
-        with col_g1:
-            sel_tx = st.selectbox(
-                "Select Fan-out Group Network to Inspect",
-                group_options,
-                index=default_idx
-            )
-        with col_g2:
-            show_2hop = st.checkbox("Show 2-Hop Neighbors", value=False, disabled=True, help="Hop-2 nodes are derived only when complete downstream data is available in the dataset.")
+        sel_tx = st.selectbox(
+            "Select Fan-out Group Network to Inspect",
+            group_options,
+            index=default_idx
+        )
 
         tx_info = fraud_data.get_transaction_by_id(sel_tx)
         if not isinstance(tx_info, dict) or not tx_info:
@@ -890,6 +874,8 @@ elif page == "Graph Network":
         tx_score = tx_info.get("risk_score", 92)
         tx_clean_exps = []
         for e in tx_info.get("explanations", []):
+            if "payment format" in e.lower() or "currency:" in e.lower():
+                continue
             if "risk probability" in e.lower() or "gat graph" in e.lower():
                 tx_clean_exps.append(f"GAT Neural Network Fraud Signal: {tx_risk.upper()} ({tx_score}% Confidence · Risk Score: {tx_score}/100)")
             else:

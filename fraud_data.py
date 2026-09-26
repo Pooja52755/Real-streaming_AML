@@ -485,7 +485,6 @@ class RealTimeStreamingEngine:
                             f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                             f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
                             f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
-                            f"Payment format: {pay_fmt} · Currency: US Dollar ($)",
                         ]
                     }
                 else:
@@ -507,7 +506,6 @@ class RealTimeStreamingEngine:
                         f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                         f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
                         f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
-                        f"Payment format: {pay_fmt} · Currency: US Dollar ($)",
                     ]
 
         self._save_state_to_disk()
@@ -546,6 +544,8 @@ class RealTimeStreamingEngine:
         risk_score = inv.get("risk_score", 92)
         cleaned_exps = []
         for e in inv.get("explanations", []):
+            if "payment format" in e.lower() or "currency:" in e.lower():
+                continue
             if "risk probability" in e.lower() or "gat graph" in e.lower():
                 cleaned_exps.append(f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
             else:
