@@ -56,10 +56,30 @@ def load_and_prepare_data(data_path: str = "Data/testing_accounts.csv", accounts
     if "Account" in df_trans.columns and "From Account" not in df_trans.columns:
         df_trans["From Account"] = df_trans["Account"]
 
-    # Sort chronologically by original dataset Timestamp
-    if "Timestamp" in df_trans.columns:
-        df_trans["dt_temp"] = pd.to_datetime(df_trans["Timestamp"], errors="coerce")
-        df_trans = df_trans.sort_values("dt_temp").drop(columns=["dt_temp"]).reset_index(drop=True)
+    # 1. Detect timestamp column
+    ts_col = None
+    for cand in ["Timestamp", "TS", "timestamp", "Time", "datetime", "date"]:
+        if cand in df_trans.columns:
+            ts_col = cand
+            break
+
+    # 2. Parse and perform strict global stable chronological sorting
+    if ts_col:
+        df_trans["_dt_parsed"] = pd.to_datetime(df_trans[ts_col], errors="coerce")
+        # Global stable sort by timestamp only
+        df_trans = df_trans.sort_values("_dt_parsed", ascending=True, kind="stable").reset_index(drop=True)
+        
+        # 3. Monotonic validation assertion
+        assert df_trans["_dt_parsed"].is_monotonic_increasing, "Validation Error: Transactions are not in strict chronological order!"
+        
+        earliest_ts = str(df_trans[ts_col].iloc[0]) if len(df_trans) > 0 else "N/A"
+        latest_ts = str(df_trans[ts_col].iloc[-1]) if len(df_trans) > 0 else "N/A"
+        
+        print("Chronological ordering verified: TRUE")
+        print(f"Earliest transaction TS: {earliest_ts}")
+        print(f"Latest transaction TS: {latest_ts}")
+        
+        df_trans = df_trans.drop(columns=["_dt_parsed"])
 
     print(f"Successfully loaded {len(df_trans):,} transactions and {len(acc_map):,} account profiles ready for real-time streaming.")
     return df_trans, acc_map
@@ -117,7 +137,7 @@ def stream_transactions(df: pd.DataFrame, acc_map: dict, delay_sec: float = 1.0,
                 amt = res.get("amount", 0.0)
                 ts = res.get("timestamp", "")
                 gat_prob = res.get("risk_probability", 0.0)
-                confidence = res.get("gat_confidence", f"{gat_prob*100:.4f}%")
+                prob_str = res.get("gat_probability", f"{gat_prob*100:.4f}%")
                 graph_info = res.get("graph_state", {})
                 nodes_cnt = graph_info.get("total_nodes_in_graph", 0)
                 edges_cnt = graph_info.get("total_edges_in_graph", 0)
@@ -125,11 +145,11 @@ def stream_transactions(df: pd.DataFrame, acc_map: dict, delay_sec: float = 1.0,
 
                 icon = "[HIGH RISK]" if level == "HIGH" else "[MED RISK]" if level == "MEDIUM" else "[LOW RISK]"
 
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] #{total_streamed:04d} | {icon} Score: {float(score):.2f}/100 | GAT Confidence: {confidence} | {pattern}")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] #{total_streamed:04d} | {icon} Score: {float(score):.2f}/100 | GAT Risk Prob: {prob_str} | {pattern}")
                 print(f"   TxID: {res.get('transaction_id')} | {sender} -> {receiver} | ${amt:,.2f} | TS: {ts}")
                 print(f"   Graph Memory State: {nodes_cnt} Nodes, {edges_cnt} Edges | Historical Sender Out Degree Prior to TX: {prior_out}")
                 if level == "HIGH":
-                    print(f"   [!] GAT Elevated Risk Alert: Pure GAT Sigmoid Output = {gat_prob*100:.4f}% ({gat_prob:.6f})")
+                    print(f"   [!] GAT High Risk Alert: Pure GAT Sigmoid Output = {gat_prob*100:.4f}% ({gat_prob:.6f})")
                 print("-" * 80)
             else:
                 print(f"Backend returned HTTP {resp.status_code}: {resp.text}")

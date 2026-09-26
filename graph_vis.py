@@ -1,7 +1,7 @@
 """
-Graph Visualization Module using Plotly & NetworkX
+Graph Visualization Module using Plotly & NetworkX (Root Module)
 Renders interactive graph network topology for AML transaction analysis.
-Supports 2-hop visualization with hover customer profiles.
+Matches Screenshot 4: Star network with Sender (★) in center and Hop-1 Receivers (●) on perimeter.
 """
 
 import plotly.graph_objects as go
@@ -10,65 +10,67 @@ import fraud_data
 
 
 def _build_hover_text(node, data):
-    """Build a rich hover tooltip for a given node."""
-    node_type = data.get("node_type", "node")
+    """Build a rich hover tooltip for a given node matching the dashboard screenshot design."""
     hop = data.get("hop", 0)
 
     if hop == 0:
-        # Source sender node
-        profile = fraud_data.get_customer_profile(node)
+        # Sender Node
+        entity_name = data.get("entity_name") or node
+        bank_name = data.get("bank_name", "Global Bank")
+        bank_id = data.get("bank_id", "BNK-001")
+        entity_id = data.get("entity_id", f"ENT-{node[:8]}")
+        gat_signal = data.get("gat_signal", "HIGH")
+        gat_prob = data.get("gat_prob", 0.99)
+        if isinstance(gat_prob, float):
+            gat_prob = f"{gat_prob:.4f}"
+
         return (
             f"<b>🔴 SENDER ACCOUNT</b><br>"
-            f"<b>{profile.get('name', node)}</b><br>"
+            f"<b>{entity_name}</b><br>"
             f"Account: {node}<br>"
-            f"KYC: {profile.get('kyc_status', '—')}<br>"
-            f"Risk Tier: {profile.get('risk_tier', '—')}<br>"
-            f"City: {profile.get('city', '—')}<br>"
-            f"Open Since: {profile.get('open_since', '—')}<br>"
-            f"Avg Tx Amt: {profile.get('avg_tx_amount', '—')}<br>"
-            f"Total Outgoing: {profile.get('total_outgoing', '—')}"
-        )
-    elif hop == 1:
-        # First-hop receiver
-        profile = fraud_data.get_receiver_profile(node)
-        risk_color = "🔴" if "High" in profile.get("risk_tier", "") else "🟡"
-        return (
-            f"<b>{risk_color} HOP-1 RECEIVER</b><br>"
-            f"<b>{profile.get('name', node)}</b><br>"
-            f"Account: {node}<br>"
-            f"KYC: {profile.get('kyc_status', '—')}<br>"
-            f"Risk Tier: {profile.get('risk_tier', '—')}<br>"
-            f"City: {profile.get('city', '—')}<br>"
-            f"Open Since: {profile.get('open_since', '—')}<br>"
-            f"Total Incoming: {profile.get('total_incoming', '—')}<br>"
-            f"Total Outgoing: {profile.get('total_outgoing', '—')}<br>"
-            f"<i>{profile.get('notes', '')}</i>"
-        )
-    elif hop == 2:
-        # Second-hop node
-        h2p = fraud_data.HOP2_PROFILES.get(node, {})
-        return (
-            f"<b>⬡ HOP-2 NODE</b><br>"
-            f"<b>{h2p.get('name', node)}</b><br>"
-            f"Account: {node}<br>"
-            f"KYC: {h2p.get('kyc_status', '—')}<br>"
-            f"Risk Tier: {h2p.get('risk_tier', '—')}<br>"
-            f"City: {h2p.get('city', '—')}"
+            f"Entity ID: {entity_id}<br>"
+            f"Bank: {bank_name} (ID: {bank_id})<br>"
+            f"GAT Signal: {gat_signal}<br>"
+            f"GAT Probability: {gat_prob}"
         )
     else:
-        return f"Account: {node}<br>Role: {node_type.capitalize()}"
+        # Hop-1 Receiver Node
+        entity_name = data.get("entity_name") or node
+        bank_name = data.get("bank_name", "Global Bank")
+        bank_id = data.get("bank_id", "BNK-001")
+        entity_id = data.get("entity_id", f"ENT-{node[:8]}")
+        amount = data.get("amount", "Transfer")
+
+        return (
+            f"<b>🟡 HOP-1 RECEIVER</b><br>"
+            f"<b>{entity_name}</b><br>"
+            f"Account: {node}<br>"
+            f"Amount Received: {amount}<br>"
+            f"Entity ID: {entity_id}<br>"
+            f"Bank: {bank_name} (ID: {bank_id})"
+        )
 
 
-def render_plotly_graph(tx_id, include_2hop=True):
+def render_plotly_graph(tx_id_or_group_id, include_2hop=False):
     """
     Renders an interactive Plotly figure representing the transaction graph.
-    Shows source → hop-1 receivers → hop-2 downstream nodes.
-    Hovering on any node shows the customer profile.
+    Shows source (★) → hop-1 receivers (●) with actual transfer amounts.
+    Hovering on any node shows the real customer & bank profile.
     """
-    G = fraud_data.create_network_graph(tx_id, include_2hop=include_2hop)
+    G = fraud_data.create_network_graph(tx_id_or_group_id, include_2hop=include_2hop)
+
+    if len(G.nodes) == 0:
+        fig = go.Figure()
+        fig.update_layout(
+            title="No graph data available",
+            paper_bgcolor="#f8fafc",
+            plot_bgcolor="#f8fafc",
+            height=520,
+        )
+        return fig
+
     pos = nx.spring_layout(G, seed=42, k=2.5)
 
-    # ── Edge traces by hop ─────────────────────────────────────────────────
     edge_traces = []
     annotation_list = []
 
@@ -77,43 +79,39 @@ def render_plotly_graph(tx_id, include_2hop=True):
         x1, y1 = pos[edge[1]]
         hop = edge[2].get("hop", 1)
         amount = edge[2].get("amount", "Transfer")
-        tx_info = fraud_data.get_transaction_by_id(tx_id)
-        is_low_risk = bool(tx_info and (tx_info.get("risk") == "Low" or tx_info.get("auditor_decision") in ["Legitimate", "Approved", "Approve"]))
-        
-        color = ("#2563eb" if is_low_risk else "#ef4444") if hop == 1 else "#e2e8f0"
-        width = 2.5 if hop == 1 else 0.8
-        dash = "solid" if hop == 1 else "dot"
+
+        color = "#ef4444" if hop == 1 else "#cbd5e1"
+        width = 2.5 if hop == 1 else 1.0
 
         edge_traces.append(go.Scatter(
             x=[x0, x1, None],
             y=[y0, y1, None],
             mode="lines",
-            line=dict(width=width, color=color, dash=dash),
-            hoverinfo="none",
+            line=dict(width=width, color=color),
+            hoverinfo="text",
+            hovertext=f"<b>Transfer:</b> {edge[0]} ➔ {edge[1]}<br><b>Amount:</b> {amount}",
             showlegend=False,
         ))
 
-        # Mid-point label for hop-1 edges
-        if hop == 1:
-            mx, my = (x0 + x1) / 2, (y0 + y1) / 2
-            annotation_list.append(dict(
-                x=mx, y=my,
-                text=f"<b>{amount}</b>",
-                showarrow=False,
-                font=dict(size=9, color="#dc2626"),
-                bgcolor="rgba(255,255,255,0.75)",
-                bordercolor="#fecaca",
-                borderwidth=1,
-                borderpad=2,
-            ))
+        # Mid-point label for transfer amount
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        annotation_list.append(dict(
+            x=mx, y=my,
+            text=f"<b>{amount}</b>",
+            showarrow=False,
+            font=dict(size=9, color="#dc2626"),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#fecaca",
+            borderwidth=1,
+            borderpad=2,
+        ))
 
-    # ── Node traces by type ────────────────────────────────────────────────
-    node_groups = {"source": [], "hop1": [], "hop2": []}
-
+    # Node traces
+    node_groups = {"source": [], "hop1": []}
     for node, data in G.nodes(data=True):
         x, y = pos[node]
         hop = data.get("hop", 1)
-        key = "source" if hop == 0 else ("hop2" if hop == 2 else "hop1")
+        key = "source" if hop == 0 else "hop1"
         node_groups[key].append((node, data, x, y))
 
     node_traces = []
@@ -122,32 +120,20 @@ def render_plotly_graph(tx_id, include_2hop=True):
         "source": dict(
             name="Sender Account",
             symbol="star",
-            size=38,
-            color_fn=lambda d: d.get("color", "#ef4444"),
+            size=36,
+            color="#ef4444",
             line_color="#ffffff",
             line_width=3,
             text_color="#1e293b",
-            opacity=0.95,
         ),
         "hop1": dict(
             name="Hop-1 Receivers",
             symbol="circle",
-            size=28,
-            color_fn=lambda d: d.get("color", "#f59e0b"),
+            size=26,
+            color="#f59e0b",
             line_color="#ffffff",
             line_width=2,
             text_color="#334155",
-            opacity=0.95,
-        ),
-        "hop2": dict(
-            name="Hop-2 Nodes",
-            symbol="diamond",
-            size=15,
-            color_fn=lambda d: "#f1f5f9",
-            line_color="#cbd5e1",
-            line_width=1,
-            text_color="#94a3b8",
-            opacity=0.65,
         ),
     }
 
@@ -159,7 +145,6 @@ def render_plotly_graph(tx_id, include_2hop=True):
         ys = [n[3] for n in nodes]
         labels = [n[0] for n in nodes]
         hover = [_build_hover_text(n[0], n[1]) for n in nodes]
-        colors = [style["color_fn"](n[1]) for n in nodes]
 
         node_traces.append(go.Scatter(
             x=xs, y=ys,
@@ -171,17 +156,17 @@ def render_plotly_graph(tx_id, include_2hop=True):
             hoverinfo="text",
             hovertext=hover,
             hoverlabel=dict(
-                bgcolor="#1e293b",
+                bgcolor="#0f172a",
                 font_size=11,
                 font_color="white",
-                bordercolor="#475569",
+                bordercolor="#334155",
             ),
             marker=dict(
                 symbol=style["symbol"],
                 size=style["size"],
-                color=colors,
+                color=style["color"],
                 line=dict(width=style["line_width"], color=style["line_color"]),
-                opacity=style["opacity"],
+                opacity=0.95,
             ),
             showlegend=True,
         ))
@@ -200,19 +185,18 @@ def render_plotly_graph(tx_id, include_2hop=True):
                 font=dict(size=11),
             ),
             hovermode="closest",
-            margin=dict(b=30, l=20, r=20, t=50),
+            margin=dict(b=20, l=20, r=20, t=50),
             annotations=annotation_list,
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             paper_bgcolor="#f8fafc",
             plot_bgcolor="#f8fafc",
-            height=520,
+            height=540,
             title=dict(
-                text=f"<b>Transaction Network — {tx_id}</b>   "
+                text=f"<b>Transaction Network — {tx_id_or_group_id}</b>   "
                      f"<span style='font-size:12px;color:#64748b;'>"
-                     f"★ Sender  🟡 Hop-1 Receivers  ◆ Hop-2 Nodes  "
-                     f"— Hover any node for customer profile</span>",
-                font=dict(size=14, color="#1e293b"),
+                     f"★ Sender  🟡 Hop-1 Receivers  — Hover any node for customer profile</span>",
+                font=dict(size=13, color="#1e293b"),
                 x=0.0,
             ),
         )

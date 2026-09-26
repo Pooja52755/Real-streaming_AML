@@ -3,9 +3,13 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
+import time
 import textwrap
+import importlib
 import fraud_data
 import graph_vis
+
+
 
 # ─── Page Configuration ────────────────────────────────────────────────────
 st.set_page_config(
@@ -42,7 +46,7 @@ st.html(textwrap.dedent("""
         display:inline-block;
     }
     .badge-low {
-        background:#fef2f2; color:#dc2626; border:1px solid #fecaca;
+        background:#f0fdf4; color:#16a34a; border:1px solid #bbf7d0;
         padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;
         display:inline-block;
     }
@@ -70,7 +74,7 @@ st.html(textwrap.dedent("""
     .flagged-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
     .flagged-card-high { border-left-color: #ef4444 !important; }
     .flagged-card-medium { border-left-color: #f59e0b !important; }
-    .flagged-card-low { border-left-color: #ef4444 !important; }
+    .flagged-card-low { border-left-color: #16a34a !important; }
     .flagged-card-selected { background:#eff6ff; border-color:#93c5fd; }
     .flagged-acc-id { font-weight:700; font-size:13px; color:#1e40af; }
     .flagged-pattern { font-size:11px; color:#64748b; margin-top:3px; }
@@ -87,30 +91,15 @@ st.html(textwrap.dedent("""
         background:#ffffff; border:1px solid #e2e8f0; border-radius:12px;
         padding:20px; box-shadow:0 1px 4px rgba(0,0,0,0.06);
     }
-    .graph-network-btn {
-        display:inline-flex; align-items:center; gap:8px;
-        background: linear-gradient(135deg, #1d4ed8, #2563eb);
-        color:white; font-weight:700; font-size:13px;
-        padding:10px 18px; border-radius:8px; cursor:pointer;
-        border:none; margin-bottom:16px;
-        box-shadow: 0 2px 8px rgba(37,99,235,0.35);
-        transition: all 0.2s;
-        text-decoration:none;
-    }
-    .graph-network-btn:hover {
-        background: linear-gradient(135deg, #1e3a8a, #1d4ed8);
-        box-shadow: 0 4px 14px rgba(37,99,235,0.45);
-        transform: translateY(-1px);
-    }
 
     /* ── XAI Explanation box ── */
     .xai-box {
         background:#fffbeb; border:1px solid #fde68a; border-radius:10px;
         padding:14px 16px; margin-top:16px;
     }
-    .xai-box-high { background:#fff5f5; border:1px solid #fecaca; }
-    .xai-box-medium { background:#fffbeb; border:1px solid #fde68a; }
-    .xai-box-low { background:#f0fdf4; border:1px solid #bbf7d0; }
+    .xai-box-high {
+        background:#fff5f5; border:1px solid #fecaca;
+    }
     .xai-title { font-weight:700; font-size:13px; color:#1e293b; margin-bottom:8px; }
     .xai-list { margin:0; padding-left:18px; font-size:12px; color:#334155; line-height:1.8; }
 
@@ -156,21 +145,14 @@ st.html(textwrap.dedent("""
     }
     .profile-metric-label { font-size:10px; color:#64748b; text-transform:uppercase; font-weight:600; }
     .profile-metric-val { font-size:15px; font-weight:700; color:#0f172a; margin-top:2px; }
-    .kyc-verified { color:#16a34a; font-weight:700; }
-    .kyc-flagged { color:#dc2626; font-weight:700; }
-    .kyc-minimal { color:#d97706; font-weight:700; }
-    .kyc-unverified { color:#dc2626; font-weight:700; }
 
-    /* ── Behavior table ── */
+    /* ── Financial Summary table ── */
     .custom-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
     .custom-table th {
         text-align:left; padding:8px 10px; background:#f8fafc;
         color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;
     }
     .custom-table td { padding:8px 10px; border-bottom:1px solid #f1f5f9; color:#1e293b; }
-    .change-high { color:#dc2626; font-weight:600; }
-    .change-medium { color:#d97706; font-weight:600; }
-    .change-low { color:#16a34a; font-weight:500; }
 
     /* ── Top banner ── */
     .top-banner {
@@ -195,13 +177,6 @@ st.html(textwrap.dedent("""
     .sidebar-brand-title { font-size:16px; font-weight:800; color:#0f172a; }
     .sidebar-brand-subtitle { font-size:11px; color:#64748b; }
 
-    /* ── Model info bar ── */
-    .model-info-bar {
-        background:#eff6ff; border:1px solid #dbeafe; border-radius:8px;
-        padding:10px 14px; display:flex; justify-content:space-between;
-        align-items:center; font-size:12px; color:#1e40af; margin-top:14px;
-    }
-
     /* ── Section labels ── */
     .section-label {
         font-size:11px; font-weight:700; color:#64748b;
@@ -212,7 +187,7 @@ st.html(textwrap.dedent("""
 
 # ─── Session State Initialization ────────────────────────────────────────
 if "selected_tx_id" not in st.session_state:
-    st.session_state.selected_tx_id = "TX-10231"
+    st.session_state.selected_tx_id = None
 if "selected_sub_tx" not in st.session_state:
     st.session_state.selected_sub_tx = None
 if "human_decision_submitted" not in st.session_state:
@@ -230,23 +205,89 @@ with st.sidebar:
         </div>
         <div>
             <div class="sidebar-brand-title">AML Fraud Detection</div>
-            <div class="sidebar-brand-subtitle">Graph based Transaction Monitoring</div>
+            <div class="sidebar-brand-subtitle">GAT-based Transaction Monitoring</div>
         </div>
     </div>
     """))
 
-    # If goto_graph flag is set, pre-select the graph page
-    default_page_idx = 3 if st.session_state.goto_graph else 0
+    default_page_idx = 1 if st.session_state.goto_graph else 0
     page = st.radio(
         "Navigation",
-        ["Dashboard", "⚡ Real-Time Simulator", "Transactions", "Alerts / Graph Network", "Customers", "Reports", "Settings", "Help"],
+        ["Dashboard", "Graph Network"],
         index=default_page_idx,
         label_visibility="collapsed"
     )
-    if st.session_state.goto_graph and page == "Alerts / Graph Network":
+    if st.session_state.goto_graph and page == "Graph Network":
         st.session_state.goto_graph = False
 
-    st.html("<br><br><hr><div style='text-align:center;color:#94a3b8;font-size:11px;'>© 2025 AML System</div>")
+    # ── Live Streaming Simulation Controls ──
+    st.markdown("---")
+    st.markdown("<div style='font-size:12px;font-weight:700;color:#0f172a;margin-bottom:4px;'>⚡ Real-Time Stream Engine</div>", unsafe_allow_html=True)
+    status = fraud_data.get_stream_status()
+    curr_tx = status["current_idx"]
+    tot_tx = status["total_txs"]
+    active_cnt = status["active_investigations"]
+
+    st.markdown(
+        f"<div style='font-size:11px;color:#64748b;margin-bottom:6px;'>"
+        f"Streamed: <b>{curr_tx} / {tot_tx}</b> txs<br>"
+        f"Active Alerts: <b style='color:#dc2626;'>{active_cnt}</b>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+    st.progress(min(1.0, curr_tx / max(1, tot_tx)))
+
+    btn_s1, btn_s2 = st.columns(2)
+    with btn_s1:
+        if st.button("▶ Step +1", key="btn_stream_1", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+            fraud_data.step_stream(1)
+            st.rerun()
+    with btn_s2:
+        if st.button("⏩ Step +10", key="btn_stream_10", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+            fraud_data.step_stream(10)
+            st.rerun()
+
+    col_live1, col_live2 = st.columns(2)
+    with col_live1:
+        if st.button("⏱️ Stream 5 Live", key="btn_stream_5_live", use_container_width=True, disabled=(curr_tx >= tot_tx), help="Streams 5 transactions one-by-one with 1 second delay"):
+            steps = min(5, tot_tx - curr_tx)
+            with st.status(f"⚡ Streaming {steps} txs live (1s/tx)...", expanded=True) as s:
+                for i in range(steps):
+                    tx = fraud_data.step_stream(1)
+                    stat = fraud_data.get_stream_status()
+                    last = stat.get("last_tx") or {}
+                    fo_str = "🚨 Fan-out!" if last.get("is_fanout") else "1-hop"
+                    s.write(f"Tx {stat['current_idx']}/{tot_tx}: `{last.get('from_account')}` ➔ `{last.get('to_account')}` ({last.get('amount_formatted')}) | {fo_str}")
+                    time.sleep(1.0)
+                s.update(label=f"✅ {steps} Transactions Ingested!", state="complete", expanded=False)
+            st.rerun()
+    with col_live2:
+        if st.button("⏱️ Stream 10 Live", key="btn_stream_10_live", use_container_width=True, disabled=(curr_tx >= tot_tx), help="Streams 10 transactions one-by-one with 1 second delay"):
+            steps = min(10, tot_tx - curr_tx)
+            with st.status(f"⚡ Streaming {steps} txs live (1s/tx)...", expanded=True) as s:
+                for i in range(steps):
+                    tx = fraud_data.step_stream(1)
+                    stat = fraud_data.get_stream_status()
+                    last = stat.get("last_tx") or {}
+                    fo_str = "🚨 Fan-out!" if last.get("is_fanout") else "1-hop"
+                    s.write(f"Tx {stat['current_idx']}/{tot_tx}: `{last.get('from_account')}` ➔ `{last.get('to_account')}` ({last.get('amount_formatted')}) | {fo_str}")
+                    time.sleep(1.0)
+                s.update(label=f"✅ {steps} Transactions Ingested!", state="complete", expanded=False)
+            st.rerun()
+
+    btn_s3, btn_s4 = st.columns(2)
+    with btn_s3:
+        if st.button("⚡ Run All 100", key="btn_stream_all", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+            fraud_data.step_stream(tot_tx - curr_tx)
+            st.rerun()
+    with btn_s4:
+        if st.button("🔄 Reset to 0", key="btn_stream_reset", use_container_width=True):
+            fraud_data.reset_stream()
+            st.session_state.selected_tx_id = None
+            st.session_state.selected_sub_tx = None
+            st.rerun()
+
+    st.html("<br><hr><div style='text-align:center;color:#94a3b8;font-size:11px;'>© AML Fraud Investigation System</div>")
 
 # ─── Top Header ───────────────────────────────────────────────────────────
 current_time = datetime.now().strftime("%I:%M:%S %p")
@@ -255,7 +296,7 @@ with col_h1:
     st.html(textwrap.dedent("""
     <div>
         <h1 class="header-title">AML Fraud Detection</h1>
-        <div class="header-subtitle">Graph based Transaction Monitoring</div>
+        <div class="header-subtitle">Graph Attention Network (GAT) AML Monitoring</div>
     </div>
     """))
 with col_h2:
@@ -272,516 +313,455 @@ st.write("")
 # ══════════════════════════════════════════════════════════════════════════════
 if page == "Dashboard":
 
-    # ── RAW TRANSACTION INPUT FIELDS AT TOP OF DASHBOARD ──
-    with st.expander("📥 Submit Raw Dataset Transactions for Real-Time Model Fan-Out Detection", expanded=True):
-        st.markdown(
-            "Supply raw dataset transaction fields (**Timestamp, From Bank, From Account, To Bank, To Account, Amount Received, Receiving Currency, Amount Paid, Payment Currency, Payment Format, Bank Name, Bank ID, Account Number, Entity ID, Entity Name**). "
-            "Input 1, 5, 10, 20 or any number of transactions. The GAT + LightGBM model will detect fan-out patterns and display results live on this Dashboard!"
-        )
-        
-        db_tab0, db_tab1, db_tab2 = st.tabs([
-            "📡 Real-Time Live Bank Streamer", 
-            "✍️ Single / Multi Input Form", 
-            "📊 Batch Table Editor (10, 20+ Txs)"
-        ])
+    total_txs_count = f"{len(fraud_data.get_transactions_df()):,}"
+    flagged_senders = fraud_data.get_all_flagged_senders()
+    high_count = sum(1 for s in flagged_senders if s["risk"] == "High")
+    med_count = sum(1 for s in flagged_senders if s["risk"] == "Medium")
+    low_count = sum(1 for s in flagged_senders if s["risk"] == "Low")
 
-        with db_tab0:
-            st.markdown("#### 📡 Real-Time Bank Stream Engine (Continuous Live Ingestion)")
-            st.markdown(
-                "Simulate real bank streaming transactions continuously in real time. The stream engine emits ONLY raw dataset features "
-                "(**Timestamp, From Bank, From Account, To Bank, To Account, Amount Paid, Payment Currency, Amount Received, Receiving Currency, Payment Format, Bank Name, Bank ID, Account Number, Entity ID, Entity Name**). "
-                "Feature engineering, GAT + LightGBM model detection, and graph topology updates are computed dynamically by our system!"
-            )
+    stream_status = fraud_data.get_stream_status()
+    curr_tx = stream_status["current_idx"]
+    tot_tx = stream_status["total_txs"]
+    pct = int((curr_tx / max(1, tot_tx)) * 100)
+    rem = max(0, tot_tx - curr_tx)
+    last_tx = stream_status.get("last_tx")
 
-            # Session State initialization for continuous live stream
-            if "is_live_streaming" not in st.session_state:
-                st.session_state.is_live_streaming = False
-            if "live_stream_count" not in st.session_state:
-                st.session_state.live_stream_count = 0
-            if "live_stream_speed" not in st.session_state:
-                st.session_state.live_stream_speed = 2.0
-
-            s_col1, s_col2, s_col3 = st.columns([1.5, 1, 1])
-            with s_col1:
-                stream_toggle = st.toggle("🔴 START CONTINUOUS LIVE STREAMING (Real-Time Ingestion)", value=st.session_state.is_live_streaming, key="live_stream_toggle")
-                st.session_state.is_live_streaming = stream_toggle
-            with s_col2:
-                stream_speed = st.slider("Stream Interval (seconds)", min_value=1.0, max_value=5.0, value=float(st.session_state.live_stream_speed), step=0.5, key="stream_speed_slider")
-                st.session_state.live_stream_speed = stream_speed
-            with s_col3:
-                if st.button("🗑️ Reset Stream Engine State", use_container_width=True):
-                    fraud_data.reset_system_state()
-                    st.session_state.live_stream_count = 0
-                    st.session_state.is_live_streaming = False
-                    st.session_state.selected_tx_id = "TX-10231"
-                    st.rerun()
-
-            if st.session_state.is_live_streaming:
-                import stream_engine
-                import time
-                raw_tx = stream_engine.generate_raw_transaction()
-                new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
-                st.session_state.live_stream_count += 1
-                if new_tx["risk"] in ["High", "Medium"]:
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                st.info(f"📡 **Live Stream Ingestion Active** (Ingested #{st.session_state.live_stream_count}): {raw_tx['from_account']} ➔ {raw_tx['to_account']} | ${raw_tx['amount_paid']:,.2f} USD | Evaluated Score = {new_tx['risk_score']}/100 ({new_tx['risk']} Risk)")
-                time.sleep(st.session_state.live_stream_speed)
-                st.rerun()
-
-
-
-            # Direct Stream Injection Buttons
-            st.markdown("---")
-            st.markdown("**⚡ Quick Stream Generators (Inject Raw Fan-Out / Single Transactions):**")
-            sc_col1, sc_col2, sc_col3 = st.columns(3)
-            with sc_col1:
-                if st.button("🏢 Stream New Corporate Account (10 Supplier Fan-Out)", type="primary", use_container_width=True):
-                    corp_txs = [
-                        {"timestamp": f"2026/09/21 14:{i+1:02d}", "from_bank": "National Bank of Harrisburg", "from_account": "ACC_CORP_SUPPLIERS_88", "to_bank": "Acme Bank", "to_account": f"ACC_SUPPLIER_{i+1:02d}", "amount_paid": 4850.0, "amount_received": 4850.0, "payment_currency": "US Dollar", "receiving_currency": "US Dollar", "payment_format": "ACH", "bank_name": "National Bank of Harrisburg", "bank_id": "BNK-1092", "account_number": "ACC_CORP_SUPPLIERS_88", "entity_id": "ENT-CORP-88", "entity_name": "Acme Global Manufacturing Corp"}
-                        for i in range(10)
-                    ]
-                    new_tx = fraud_data.add_realtime_simulation_transaction(corp_txs)
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                    st.success(f"✅ Streamed New Corporate Account ({new_tx['tx_id']}): 10 Supplier Transfers! Model Evaluated Risk = {new_tx['risk_score']}/100.")
-                    st.rerun()
-
-            with sc_col2:
-                if st.button("🚨 Stream Novel High-Risk Mule Fan-Out Burst", use_container_width=True):
-                    mule_txs = [
-                        {"timestamp": f"2026/09/21 15:{i+1:02d}", "from_bank": "Bank of New York", "from_account": "ACC_NOVEL_MULE_99", "to_bank": "Offshore Bank", "to_account": f"ACC_MULE_RECV_{i+1:02d}", "amount_paid": 9850.0, "amount_received": 9850.0, "payment_currency": "US Dollar", "receiving_currency": "US Dollar", "payment_format": "Wire", "bank_name": "Bank of New York", "bank_id": "BNK-0012", "account_number": "ACC_NOVEL_MULE_99", "entity_id": "ENT-MULE-99", "entity_name": "Unverified Individual Entity"}
-                        for i in range(10)
-                    ]
-                    new_tx = fraud_data.add_realtime_simulation_transaction(mule_txs)
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                    st.success(f"✅ Streamed Novel High-Risk Burst ({new_tx['tx_id']}): 10 Mule Transfers! Model Evaluated Risk = {new_tx['risk_score']}/100.")
-                    st.rerun()
-
-            with sc_col3:
-                if st.button("⚡ Stream 1 Single Real-Time Transfer", use_container_width=True):
-                    import stream_engine
-                    raw_tx = stream_engine.generate_raw_transaction()
-                    new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                    st.success(f"✅ Streamed Single Real-Time Transfer ({new_tx['tx_id']})! Sender: {raw_tx['from_account']} ➔ {raw_tx['to_account']}. Risk = {new_tx['risk_score']}/100.")
-                    st.rerun()
-
-
-        with db_tab1:
-            with st.form("dash_tx_form", clear_on_submit=False):
-                d_c1, d_c2, d_c3, d_c4 = st.columns(4)
-                with d_c1:
-                    dash_from_bank = st.text_input("From Bank", value="Bank of New York")
-                    dash_from_acc = st.text_input("From Account", value="ACC_78421")
-                    dash_bank_name = st.text_input("Bank Name", value="GlobalTrust Financial")
-                    dash_bank_id = st.text_input("Bank ID", value="BNK-1092")
-                with d_c2:
-                    dash_to_bank = st.text_input("To Bank", value="Portugal Bank")
-                    dash_to_acc = st.text_input("To Account", value="ACC_90112")
-                    dash_acc_num = st.text_input("Account Number", value="8001BB380")
-                    dash_entity_id = st.text_input("Entity ID", value="ENT-9912")
-                with d_c3:
-                    dash_amt_paid = st.number_input("Amount Paid ($)", min_value=1.0, value=9500.0, step=100.0)
-                    dash_pay_curr = st.selectbox("Payment Currency", ["US Dollar", "Euro", "UK Pound", "Rupee", "Yen"], index=0)
-                    dash_amt_rec = st.number_input("Amount Received ($)", min_value=1.0, value=9500.0, step=100.0)
-                    dash_rec_curr = st.selectbox("Receiving Currency", ["US Dollar", "Euro", "UK Pound", "Rupee", "Yen"], index=0)
-                with d_c4:
-                    dash_fmt = st.selectbox("Payment Format", ["ACH", "Wire", "Credit Card", "Cheque", "Cash"], index=0)
-                    dash_time = st.text_input("Timestamp", value=datetime.now().strftime("%Y/%m/%d %H:%M"))
-                    dash_entity_name = st.text_input("Entity Name", value="Global Logistics Corp")
-
-                dash_submitted = st.form_submit_button("⚡ Run Model Detection & Display on Dashboard", type="primary", use_container_width=True)
-                if dash_submitted:
-                    raw_in = [{
-                        "timestamp": dash_time,
-                        "from_bank": dash_from_bank,
-                        "from_account": dash_from_acc,
-                        "to_bank": dash_to_bank,
-                        "to_account": dash_to_acc,
-                        "amount_paid": dash_amt_paid,
-                        "amount_received": dash_amt_rec,
-                        "payment_currency": dash_pay_curr,
-                        "receiving_currency": dash_rec_curr,
-                        "payment_format": dash_fmt,
-                        "bank_name": dash_bank_name,
-                        "bank_id": dash_bank_id,
-                        "account_number": dash_acc_num,
-                        "entity_id": dash_entity_id,
-                        "entity_name": dash_entity_name
-                    }]
-                    new_tx = fraud_data.add_realtime_simulation_transaction(raw_in)
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                    st.success(f"✅ Executed Model Inference: Created {new_tx['tx_id']} on Dashboard with Risk Score = {new_tx['risk_score']}/100!")
-                    st.rerun()
-
-        with db_tab2:
-            st.markdown("Enter 10, 20 or any number of transactions into the table below:")
-            if "dash_batch_df" not in st.session_state:
-                st.session_state.dash_batch_df = pd.DataFrame([
-                    {"Timestamp": "2026/09/21 14:01", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Portugal Bank", "To Account": "ACC_90112", "Amount Paid ($)": 9500.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                    {"Timestamp": "2026/09/21 14:02", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Canada Bank", "To Account": "ACC_90113", "Amount Paid ($)": 9450.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                    {"Timestamp": "2026/09/21 14:03", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "UK Bank", "To Account": "ACC_90114", "Amount Paid ($)": 9800.0, "Payment Currency": "US Dollar", "Payment Format": "Wire"},
-                    {"Timestamp": "2026/09/21 14:04", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Germany Bank", "To Account": "ACC_90115", "Amount Paid ($)": 9300.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                    {"Timestamp": "2026/09/21 14:05", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Spain Bank", "To Account": "ACC_90116", "Amount Paid ($)": 9600.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                    {"Timestamp": "2026/09/21 14:06", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Brazil Bank", "To Account": "ACC_90117", "Amount Paid ($)": 9750.0, "Payment Currency": "US Dollar", "Payment Format": "Wire"},
-                    {"Timestamp": "2026/09/21 14:07", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Japan Bank", "To Account": "ACC_90118", "Amount Paid ($)": 9200.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                    {"Timestamp": "2026/09/21 14:08", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Russia Bank", "To Account": "ACC_90119", "Amount Paid ($)": 9900.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                    {"Timestamp": "2026/09/21 14:09", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Italy Bank", "To Account": "ACC_90120", "Amount Paid ($)": 9650.0, "Payment Currency": "US Dollar", "Payment Format": "Wire"},
-                    {"Timestamp": "2026/09/21 14:10", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Israel Bank", "To Account": "ACC_90121", "Amount Paid ($)": 9400.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
-                ])
-
-            edited_db_df = st.data_editor(
-                st.session_state.dash_batch_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
-                key="dash_batch_table_editor"
-            )
-
-            if st.button("⚡ Run Model Detection on Batch Transactions & Display on Dashboard", type="primary", use_container_width=True):
-                if not edited_db_df.empty:
-                    batch_txs = []
-                    for idx, row in edited_db_df.iterrows():
-                        batch_txs.append({
-                            "timestamp": str(row.get("Timestamp", f"2026/09/21 14:{idx+1:02d}")),
-                            "from_bank": str(row.get("From Bank", "GlobalTrust Bank")),
-                            "from_account": str(row.get("From Account", "ACC_78421")),
-                            "to_bank": str(row.get("To Bank", "Target Bank")),
-                            "to_account": str(row.get("To Account", f"ACC_9011{idx+1}")),
-                            "amount_paid": float(row.get("Amount Paid ($)", 1000.0) or 1000.0),
-                            "amount_received": float(row.get("Amount Paid ($)", 1000.0) or 1000.0),
-                            "payment_currency": str(row.get("Payment Currency", "US Dollar")),
-                            "payment_format": str(row.get("Payment Format", "ACH"))
-                        })
-                    new_tx = fraud_data.add_realtime_simulation_transaction(batch_txs)
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                    st.success(f"✅ Executed Model Inference: Created {new_tx['tx_id']} on Dashboard with {len(batch_txs)} transactions! Risk Score = {new_tx['risk_score']}/100")
-                    st.rerun()
-
-
-    st.markdown("---")
-
-    # Top Banner — Calculated dynamically from real dataset & engine
-    metrics = fraud_data.get_metrics_summary()
     st.html(textwrap.dedent(f"""
     <div class="top-banner">
         <div class="top-banner-icon">📋</div>
         <div>
-            <div style="font-size:12px;color:#64748b;font-weight:600;">Total Transactions Processed</div>
-            <div class="banner-value">{metrics['total_processed']}</div>
-            <div class="banner-subtext">{metrics['today_added']}</div>
+            <div style="font-size:12px;color:#64748b;font-weight:600;">Streamed Transactions</div>
+            <div class="banner-value">{curr_tx} / {tot_tx}</div>
+            <div class="banner-subtext">{pct}% Processed · {rem} Remaining</div>
         </div>
         <div style="margin-left:30px;">
-            <div style="font-size:12px;color:#64748b;font-weight:600;">High Risk Alerts</div>
-            <div style="font-size:26px;font-weight:800;color:#dc2626;">{metrics['high_risk']}</div>
-            <div style="font-size:12px;color:#dc2626;font-weight:600;">Require Human Review</div>
+            <div style="font-size:12px;color:#64748b;font-weight:600;">High Risk Groups</div>
+            <div style="font-size:26px;font-weight:800;color:#dc2626;">{high_count}</div>
+            <div style="font-size:12px;color:#dc2626;font-weight:600;">Require Review</div>
         </div>
         <div style="margin-left:30px;">
-            <div style="font-size:12px;color:#64748b;font-weight:600;">Medium Risk</div>
-            <div style="font-size:26px;font-weight:800;color:#d97706;">{metrics['medium_risk']}</div>
+            <div style="font-size:12px;color:#64748b;font-weight:600;">Medium Risk Groups</div>
+            <div style="font-size:26px;font-weight:800;color:#d97706;">{med_count}</div>
             <div style="font-size:12px;color:#d97706;font-weight:600;">Under Monitoring</div>
         </div>
         <div style="margin-left:30px;">
-            <div style="font-size:12px;color:#64748b;font-weight:600;">Low Risk</div>
-            <div style="font-size:26px;font-weight:800;color:#16a34a;">{metrics['low_risk']}</div>
+            <div style="font-size:12px;color:#64748b;font-weight:600;">Low Risk Groups</div>
+            <div style="font-size:26px;font-weight:800;color:#16a34a;">{low_count}</div>
             <div style="font-size:12px;color:#16a34a;font-weight:600;">Low Priority</div>
         </div>
         <div style="margin-left:auto;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 18px;text-align:center;">
-            <div style="font-size:11px;color:#16a34a;font-weight:700;">SYSTEM STATUS</div>
-            <div style="font-size:18px;font-weight:800;color:#16a34a;">● LIVE</div>
+            <div style="font-size:11px;color:#16a34a;font-weight:700;">GAT MODEL</div>
+            <div style="font-size:18px;font-weight:800;color:#16a34a;">● ACTIVE</div>
         </div>
     </div>
     """))
 
-    # ── 3-Column Layout ─────────────────────────────────────────────────
+    # ── Live Stream Ingestion Notification & Pop-Up Ticker ──
+    if not last_tx:
+        st.html(f"""
+        <div style="background:#f8fafc;border:2px dashed #94a3b8;border-radius:10px;padding:12px 18px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span style="font-size:24px;">⏳</span>
+                <div>
+                    <div style="font-size:13.5px;font-weight:800;color:#1e293b;">Stream Engine Standing By (0 / {tot_tx} Transactions Streamed)</div>
+                    <div style="font-size:12px;color:#64748b;margin-top:2px;">
+                        Click <b>'▶ Step +1'</b>, <b>'⏩ Step +10'</b>, or <b>'⏱️ Stream 10 Live'</b> in the sidebar to stream transactions. Fan-out escalation and graph updates will appear here live.
+                    </div>
+                </div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:10.5px;color:#64748b;font-weight:600;">GRAPH MEMORY</div>
+                <div style="font-size:13px;font-weight:800;color:#0f172a;">0 Nodes · 0 Edges</div>
+            </div>
+        </div>
+        """)
+    else:
+        lt_from = last_tx.get("from_account", "—")
+        lt_to = last_tx.get("to_account", "—")
+        lt_amt = last_tx.get("amount_formatted", "$0.00")
+        lt_sig = str(last_tx.get("risk_tier", "Low")).upper()
+        is_fo = last_tx.get("is_fanout", False)
+        lt_fan = "⚠️ FAN-OUT DETECTED (≥2 RECEIVERS)" if is_fo else "NORMAL 1-HOP"
+        lt_color = "#dc2626" if lt_sig == "HIGH" else "#d97706" if lt_sig == "MEDIUM" else "#16a34a"
+        lt_bg = "#fef2f2" if lt_sig == "HIGH" else "#fffbeb" if lt_sig == "MEDIUM" else "#f0fdf4"
+        lt_border = "#fecaca" if lt_sig == "HIGH" else "#fde68a" if lt_sig == "MEDIUM" else "#bbf7d0"
+
+        # Pop-up toast for every new transaction
+        if "last_seen_tx" not in st.session_state:
+            st.session_state.last_seen_tx = None
+        if last_tx.get("tx_id") != st.session_state.last_seen_tx:
+            st.session_state.last_seen_tx = last_tx.get("tx_id")
+            if is_fo:
+                st.toast(f"🚨 Fan-Out Alert! TX {last_tx.get('tx_id')}: {lt_from} ➔ {lt_to} ({lt_amt})", icon="🚨")
+            else:
+                st.toast(f"⚡ Ingested TX {last_tx.get('tx_id')}: {lt_from} ➔ {lt_to} ({lt_amt})", icon="⚡")
+
+        st.html(f"""
+        <div style="background:{lt_bg};border:2px solid {lt_border};border-radius:10px;padding:12px 18px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span style="font-size:24px;">⚡</span>
+                <div>
+                    <div style="font-size:13.5px;font-weight:800;color:#0f172a;">
+                        Live Ingestion: <b>TX #{last_tx.get('tx_id')}</b> (Tx {curr_tx} of {tot_tx} · {pct}% Complete) · <span style="color:{lt_color};font-weight:800;">{lt_sig} RISK</span> · <span style="font-size:11px;font-weight:600;color:#64748b;">{lt_fan}</span>
+                    </div>
+                    <div style="font-size:12px;color:#334155;margin-top:3px;">
+                        Sender: <b style="color:#1e40af;">{lt_from}</b> ➔ Receiver: <b style="color:#0f172a;">{lt_to}</b> | Amount: <b style="color:#059669;">{lt_amt}</b> | Format: <b>{last_tx.get('payment_format', 'Wire')}</b> | GAT Score: <b style="color:{lt_color};">{last_tx.get('risk_score', 0)}/100</b>
+                    </div>
+                </div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:10.5px;color:#64748b;font-weight:600;">GRAPH MEMORY</div>
+                <div style="font-size:13px;font-weight:800;color:#0f172a;">{stream_status.get('graph_nodes', 0)} Nodes · {stream_status.get('graph_edges', 0)} Edges</div>
+            </div>
+        </div>
+        """)
+
+        if is_fo:
+            st.html(f"""
+            <div style="background:#fef2f2;border:2px solid #ef4444;border-radius:8px;padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px;">
+                <span style="font-size:22px;">🚨</span>
+                <div>
+                    <div style="font-size:13px;font-weight:800;color:#991b1b;">FAN-OUT PATTERN DETECTED!</div>
+                    <div style="font-size:12px;color:#7f1d1d;margin-top:1px;">
+                        Sender <b>{lt_from}</b> has now branched to <b>{last_tx.get('sender_unique_receivers', 2)} unique receivers</b>. Escalated to <b>{lt_sig} RISK</b> and added to Active Flagged Investigations!
+                    </div>
+                </div>
+            </div>
+            """)
+
     col_left, col_center, col_right = st.columns([1.0, 1.8, 1.2])
 
     # ════════════════════════════════════════════════════════════════════
-    #  LEFT PANEL — Flagged Accounts
+    #  LEFT PANEL — Flagged Accounts (Fan-Out Groups)
     # ════════════════════════════════════════════════════════════════════
     with col_left:
-        st.html('<div class="section-label">🚨 Flagged Accounts</div>')
+        st.html('<div class="section-label">🚨 Flagged Sender Investigations</div>')
 
-        all_flagged = fraud_data.get_all_flagged_senders()
-        
-        # Active streamed simulation transactions FIRST so live streams are immediately visible on Dashboard
-        sim_txs = [t for t in all_flagged if t["tx_id"].startswith("TX-SIM")]
-        sim_txs.sort(key=lambda x: -x["risk_score"])
-        
-        hist_high = [t for t in all_flagged if t["risk"] == "High" and not t["tx_id"].startswith("TX-SIM")]
-        hist_high.sort(key=lambda x: -x["risk_score"])
-        
-        hist_med = [t for t in all_flagged if t["risk"] == "Medium" and not t["tx_id"].startswith("TX-SIM")]
-        hist_med.sort(key=lambda x: -x["risk_score"])
-        
-        all_txs = sim_txs + hist_high[:5] + hist_med[:5]
+        all_txs = fraud_data.get_all_flagged_senders()
 
-        for tx in all_txs:
-            acc = tx["account"]
-            risk = tx["risk"]
-            score = tx["risk_score"]
-            pattern = tx["pattern"]
-            is_sel = (tx["tx_id"] == st.session_state.selected_tx_id)
-
-            risk_color = "#ef4444" if risk == "High" else "#f59e0b" if risk == "Medium" else "#ef4444"
-            sel_bg = "#eff6ff" if is_sel else "#ffffff"
-            sel_border = "#93c5fd" if is_sel else "#e2e8f0"
-            bar_width = score
-
-            profile = fraud_data.get_customer_profile(acc)
-            name = profile.get("name", acc)
-
-            st.html(textwrap.dedent(f"""
-            <div class="flagged-card flagged-card-{risk.lower()}"
-                 style="background:{sel_bg}; border-color:{sel_border};">
-                <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-                    <div>
-                        <div class="flagged-acc-id">{acc}</div>
-                        <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
-                    </div>
-                    <span class="badge-{risk.lower()}">{risk}</span>
-                </div>
-                <div class="flagged-pattern">📌 {pattern}</div>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
-                    <div class="risk-score-bar-bg" style="flex:1;margin-right:8px;">
-                        <div class="risk-score-bar-fill" style="width:{bar_width}%;background:{risk_color};"></div>
-                    </div>
-                    <span style="font-size:11px;font-weight:700;color:{risk_color};">{score}/100</span>
-                </div>
+        if not all_txs:
+            st.html("""
+            <div style="background:#ffffff;border:1px dashed #cbd5e1;border-radius:10px;padding:24px 16px;text-align:center;">
+                <div style="font-size:24px;margin-bottom:8px;">🟢</div>
+                <div style="font-size:13px;font-weight:700;color:#334155;">No Active Alerts</div>
+                <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Stream transactions using the sidebar to monitor real-time graph escalation.</div>
             </div>
-            """))
-            if st.button(f"Inspect →", key=f"left_btn_{tx['tx_id']}", use_container_width=True):
-                st.session_state.selected_tx_id = tx["tx_id"]
-                st.session_state.selected_sub_tx = None
-                st.rerun()
+            """)
+        else:
+            if st.session_state.selected_tx_id not in [tx["tx_id"] for tx in all_txs]:
+                st.session_state.selected_tx_id = all_txs[0]["tx_id"]
 
+            for tx in all_txs:
+                acc = tx.get("account", "Unknown")
+                name = tx.get("name") or fraud_data.get_customer_profile(acc).get("name", acc)
+                risk = tx.get("risk", "High")
+                score = tx.get("risk_score", 100)
+                pattern = tx.get("pattern", "FAN-OUT")
+                gid = tx.get("group_id", 1)
+                tx_id = tx.get("tx_id", f"GROUP-{gid}")
+                is_sel = (tx_id == st.session_state.selected_tx_id or str(gid) == str(st.session_state.selected_tx_id))
+
+                risk_color = "#ef4444" if risk == "High" else "#f59e0b" if risk == "Medium" else "#16a34a"
+                sel_bg = "#eff6ff" if is_sel else "#ffffff"
+                sel_border = "#93c5fd" if is_sel else "#e2e8f0"
+                bar_width = max(5, min(100, score))
+                tx_count_str = tx.get('tx_count', len(fraud_data.get_fan_out_rows(tx_id)))
+
+                st.html(textwrap.dedent(f"""
+                <div class="flagged-card flagged-card-{risk.lower()}"
+                     style="background:{sel_bg}; border-color:{sel_border};">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                        <div>
+                            <div class="flagged-acc-id">Sender: {acc}</div>
+                            <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
+                        </div>
+                        <span class="badge-{risk.lower()}">{risk.upper()}</span>
+                    </div>
+                    <div class="flagged-pattern">📌 {pattern} · Group {gid} ({tx_count_str} txs)</div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+                        <div class="risk-score-bar-bg" style="flex:1;margin-right:8px;">
+                            <div class="risk-score-bar-fill" style="width:{bar_width}%;background:{risk_color};"></div>
+                        </div>
+                        <span style="font-size:11px;font-weight:700;color:{risk_color};">{score}/100</span>
+                    </div>
+                </div>
+                """))
+                if st.button(f"Inspect Group {gid} →", key=f"left_btn_{tx_id}", use_container_width=True):
+                    st.session_state.selected_tx_id = tx_id
+                    st.session_state.selected_sub_tx = None
+                    st.rerun()
 
     # ════════════════════════════════════════════════════════════════════
     #  CENTER PANEL — Fan-Out Transaction Table + XAI + Human Decision
     # ════════════════════════════════════════════════════════════════════
     with col_center:
-        curr_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
-        risk = curr_tx["risk"]
-        risk_score = curr_tx["risk_score"]
-        pattern = curr_tx["pattern"]
-
-        # ── Header ──
-        st.html(textwrap.dedent(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div>
-                <div style="font-size:16px;font-weight:800;color:#0f172a;">
-                    {curr_tx['tx_id']}
-                    <span style="font-size:12px;font-weight:500;color:#64748b;margin-left:6px;">{curr_tx['pattern']}</span>
+        if not all_txs:
+            st.html("""
+            <div class="center-card" style="text-align:center;padding:40px 20px;">
+                <div style="font-size:36px;margin-bottom:12px;">🛡️</div>
+                <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:6px;">Real-Time AML Monitoring Active</div>
+                <div style="font-size:13px;color:#64748b;max-width:480px;margin:0 auto 12px auto;line-height:1.5;">
+                    No high or medium risk fan-out clusters detected yet in current graph memory.
                 </div>
-                <div style="font-size:12px;color:#475569;margin-top:2px;">
-                    Sender: <b>{curr_tx['account']}</b> ·
-                    {curr_tx['timestamp']} · {curr_tx['payment_format']}
+                <div style="font-size:12px;color:#94a3b8;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;max-width:500px;margin:0 auto;">
+                    💡 Use <b>'▶ Step +1'</b> or <b>'⏩ Step +10'</b> in the sidebar to stream transactions from <code>Data/testing_trans.csv</code>.<br>
+                    Single sender transactions start as Low Risk; expanding to 2+ unique receivers triggers fan-out escalation.
                 </div>
             </div>
-            <span class="badge-{risk.lower()}">{risk.upper()} RISK · {risk_score}/100</span>
-        </div>
-        """))
-
-        # ── Graph Network Button ──
-        if st.button("🕸️  Tap to View as Graph Network", key="graph_btn", use_container_width=False):
-            st.session_state.goto_graph = True
-            st.rerun()
-
-        # ── Fan-Out Sub-Transaction Table ──
-        st.html('<div class="section-label">Transaction Routing Flow</div>')
-
-        fan_rows = fraud_data.get_fan_out_rows(st.session_state.selected_tx_id)
-        df_fan = pd.DataFrame(fan_rows)
-        df_fan.columns = ["Sub-TX ID", "To Account", "Amount ($)", "Time", "Account age(days)", "Status"]
-        df_display = df_fan[["Sub-TX ID", "To Account", "Amount ($)", "Time", "Account age(days)", "Status"]]
-
-        # Clickable table with row selection
-        event = st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="fan_table"
-        )
-
-        # Handle row selection → populate right panel
-        selected_rows = event.selection.get("rows", []) if event.selection else []
-        if selected_rows:
-            row_idx = selected_rows[0]
-            sub_tx_data = fan_rows[row_idx]
-            st.session_state.selected_sub_tx = sub_tx_data
-
-        st.html("""
-        <div style="font-size:10.5px;color:#94a3b8;margin-top:4px;">
-            🖱️ Click a row to view the receiver's customer profile in the right panel.
-        </div>
-        """)
-
-        # ── Why Flagged? XAI Box ──
-        if risk == "High":
-            xai_extra = "xai-box-high"
-            fraud_icon = "🚨"
-            fraud_label = "HIGH FRAUD RISK DETECTED"
-            xai_header_text = "Why was this flagged?"
-        elif risk == "Medium":
-            xai_extra = "xai-box-medium"
-            fraud_icon = "⚠️"
-            fraud_label = "SUSPICIOUS PATTERN DETECTED"
-            xai_header_text = "Why was this flagged?"
+            """)
         else:
-            xai_extra = "xai-box-low"
-            fraud_icon = "✅"
-            fraud_label = "LOW RISK — VERIFIED TRANSACTION"
-            xai_header_text = "Model Verification Analysis"
+            curr_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
+            if not isinstance(curr_tx, dict) or not curr_tx:
+                curr_tx = all_txs[0] if all_txs else {}
+                if isinstance(curr_tx, dict):
+                    st.session_state.selected_tx_id = curr_tx.get("group_id") or curr_tx.get("tx_id")
+            
+            risk = curr_tx.get("risk", "High")
+            risk_score = curr_tx.get("risk_score", 100)
+            risk_col = "#dc2626" if risk == "High" else "#d97706" if risk == "Medium" else "#16a34a"
+            pattern = curr_tx.get("pattern", "FAN-OUT")
+            gid = curr_tx.get("group_id", 1)
 
-        exps_html = "".join([f"<li>{e}</li>" for e in curr_tx["explanations"]])
-
-        st.html(textwrap.dedent(f"""
-        <div class="xai-box {xai_extra}">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                <div class="xai-title">{fraud_icon} {fraud_label} — {xai_header_text}</div>
-                <span class="badge-{risk.lower()}">{pattern}</span>
-            </div>
-            <ul class="xai-list">
-                {exps_html}
-            </ul>
-            <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #e2e8f0;padding-top:8px;">
-                Models: <b>GAT ({curr_tx.get('gat_confidence', '86%')})</b> + <b>LightGBM ({curr_tx.get('lgb_confidence', '88%')})</b> &nbsp;|&nbsp;
-                Rule Engine: <b>{curr_tx.get('rule_confidence', '95%')}</b> &nbsp;|&nbsp;
-                Combined Risk Score: <b>{curr_tx['risk_score']}/100</b>
-            </div>
-        </div>
-        """))
-
-        # ── Authorised Bank Auditor Decision Panel (HIGH RISK ONLY) ──
-        if risk == "High":
-            tx_key = curr_tx["tx_id"]
-            already_submitted = st.session_state.human_decision_submitted.get(tx_key)
+            lead_tx_id = curr_tx.get('lead_tx_id', curr_tx.get('tx_id', f'GROUP-{gid}'))
+            sender_acc = curr_tx.get('account', '—')
+            sender_name = curr_tx.get('name') or fraud_data.get_customer_profile(sender_acc).get('name', sender_acc)
+            payment_format = curr_tx.get('payment_format', '—')
+            first_ts = curr_tx.get('initial_timestamp', curr_tx.get('timestamp', '—'))
+            latest_ts = curr_tx.get('latest_timestamp', curr_tx.get('timestamp', '—'))
+            ts_display = f"Burst Start: {first_ts} · Latest: {latest_ts}" if first_ts != latest_ts else f"Timestamp: {first_ts}"
 
             st.html(textwrap.dedent(f"""
-            <div class="human-decision-panel">
-                <div class="human-decision-title">
-                    🏦 Authorised Bank Auditor Decision Required — {curr_tx['tx_id']}
-                </div>
-                <div style="font-size:12px;color:#92400e;margin-bottom:12px;">
-                    Risk Score: <b>{risk_score}/100</b> — This transaction requires an authorised bank auditor decision.
-                </div>
-            </div>
-            """))
-
-            if already_submitted:
-                decision_val = already_submitted["decision"]
-                color_map = {"✅ Approve Transaction": "#16a34a", "🚫 Block Transaction": "#dc2626", "📤 Escalate to Senior Investigator": "#d97706"}
-                col = color_map.get(decision_val, "#16a34a")
-                st.success(f"**Decision Recorded:** {decision_val}")
-                st.info(f"**Authorised Bank Auditor Notes:** {already_submitted['notes'] or '(none)'}")
-                if st.button("Revise Decision", key=f"revise_{tx_key}"):
-                    del st.session_state.human_decision_submitted[tx_key]
-                    st.rerun()
-            else:
-                dec_col1, dec_col2 = st.columns([1, 1])
-                with dec_col1:
-                    decision = st.radio(
-                        "**Authorised Bank Auditor Decision**",
-                        ["✅ Approve Transaction", "🚫 Block Transaction", "📤 Escalate to Senior Investigator"],
-                        key=f"decision_{tx_key}",
-                        index=2
-                    )
-                with dec_col2:
-                    notes = st.text_area(
-                        "**Authorised Bank Auditor Notes**",
-                        placeholder="Add reasoning, observations, or escalation notes...",
-                        key=f"notes_{tx_key}",
-                        height=180
-                    )
-
-                st.html("""
-                <div class="human-decision-disclaimer">
-                    ⚠️ <b>Disclaimer:</b> By submitting, you confirm this decision is made by an
-                    AUTHORISED BANK AUDITOR. The AI model provided supporting analysis only.
-                    This action will be logged and audited.
-                </div>
-                """)
-
-                if st.button(f"📋 Submit Decision for {tx_key}", key=f"submit_{tx_key}", type="primary", use_container_width=True):
-                    st.session_state.human_decision_submitted[tx_key] = {
-                        "decision": decision,
-                        "notes": notes,
-                        "timestamp": datetime.now().strftime("%d %b %Y, %I:%M %p")
-                    }
-                    fraud_data.record_auditor_decision(tx_key, decision, notes)
-                    st.rerun()
-
-        # ── AI Advisory (COMPLETELY AT BOTTOM) ──
-        st.html(textwrap.dedent("""
-        <div class="ai-advisory" style="margin-top:16px;">
-            <span style="font-size:16px;">🤖</span>
-            <span>
-                <b>AI Advisory:</b> The analysis above is generated by an AI model to
-                <b>support the fraud investigator's decision</b>. The AI does not block or approve
-                transactions. All final decisions must be made by an AUTHORIZED BANK AUDITOR.
-            </span>
-        </div>
-        """))
-
-    # ════════════════════════════════════════════════════════════════════
-    #  RIGHT PANEL — Customer Profile (receiver, on row click)
-    # ════════════════════════════════════════════════════════════════════
-    with col_right:
-        sub_tx = st.session_state.selected_sub_tx
-
-        if sub_tx is None:
-            st.html(textwrap.dedent("""
-            <div class="profile-card">
-                <div class="section-label">Customer Profile</div>
-                <div class="profile-empty">
-                    <div style="font-size:40px;margin-bottom:12px;">👤</div>
-                    <div style="font-size:13px;font-weight:600;color:#64748b;">No row selected</div>
-                    <div style="font-size:12px;margin-top:6px;color:#94a3b8;">
-                        Click any transaction row in the center table to view the receiver's customer profile here.
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div>
+                    <div style="font-size:16px;font-weight:800;color:#0f172a;">
+                        Fan-out Group {gid} · TX {lead_tx_id}
+                        <span style="font-size:12px;font-weight:500;color:#64748b;margin-left:6px;">{pattern}</span>
+                    </div>
+                    <div style="font-size:12px;color:#475569;margin-top:2px;">
+                        Sender: <b>{sender_acc}</b> ({sender_name}) ·
+                        {ts_display} · {payment_format}
                     </div>
                 </div>
+                <span class="badge-{risk.lower()}">{risk.upper()} RISK · {risk_score}/100</span>
             </div>
             """))
-        else:
-            if isinstance(sub_tx, (list, tuple)) and len(sub_tx) > 0:
-                sub_tx = sub_tx[0]
-            if isinstance(sub_tx, dict):
-                to_acc = sub_tx.get("to_account", sub_tx.get("receiver", sub_tx.get("receiver_account", "")))
+
+            if st.button("🕸️  Tap to View as Graph Network", key="graph_btn", use_container_width=False):
+                st.session_state.goto_graph = True
+                st.rerun()
+
+            st.html('<div class="section-label">Transaction Routing Flow (Source & Receivers)</div>')
+
+            fan_rows = fraud_data.get_fan_out_rows(st.session_state.selected_tx_id, include_source=True)
+            if fan_rows:
+                df_fan = pd.DataFrame(fan_rows)
+                df_display = df_fan[["role", "account", "to_entity_name", "amount", "time", "payment_format", "gat_signal"]].copy()
+                df_display.columns = ["Role", "Account Number", "Entity Name", "Amount", "Timestamp", "Payment Format", "GAT Signal"]
             else:
-                to_acc = str(sub_tx)
-            profile = fraud_data.get_receiver_profile(to_acc)
-            risk_tier = profile.get("risk_tier", "Unknown")
-            kyc = profile.get("kyc_status", "Unknown")
+                df_display = pd.DataFrame(columns=["Role", "Account Number", "Entity Name", "Amount", "Timestamp", "Payment Format", "GAT Signal"])
 
-            tier_color = "#dc2626" if "High" in risk_tier else "#d97706" if "Medium" in risk_tier else "#16a34a"
-
-            kyc_class = (
-                "kyc-verified" if kyc == "Verified" else
-                "kyc-flagged" if kyc == "Flagged" else
-                "kyc-minimal" if "Minimal" in kyc else
-                "kyc-unverified"
+            event = st.dataframe(
+                df_display,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="fan_table"
             )
 
-            # Behavior comparison table rows (simplified for receivers)
-            beh_rows_html = ""
-            for r in [
-                ("Total Incoming", profile.get("total_incoming", "—")),
-                ("Total Outgoing", profile.get("total_outgoing", "—")),
-                ("Unique Senders", str(profile.get("unique_senders", "—"))),
-                ("Unique Receivers", str(profile.get("unique_receivers", "—"))),
-                ("Avg Tx Amount", profile.get("avg_tx_amount", "—")),
-                ("Total Transactions", profile.get("total_transactions", "—")),
-            ]:
-                beh_rows_html += f"<tr><td><b>{r[0]}</b></td><td style='text-align:right;'>{r[1]}</td></tr>"
+            selected_rows = event.selection.get("rows", []) if event.selection else []
+            if selected_rows and len(fan_rows) > selected_rows[0]:
+                row_idx = selected_rows[0]
+                sub_tx_data = fan_rows[row_idx]
+                st.session_state.selected_sub_tx = sub_tx_data
+
+            st.html("""
+            <div style="font-size:10.5px;color:#94a3b8;margin-top:4px;">
+                🖱️ Click any row (Source Sender or Receiver) to view its customer profile in the right panel.
+            </div>
+            """)
+
+            is_high = (risk == "High")
+            xai_extra = "xai-box-high" if is_high else ""
+            exps_html = "".join([f"<li>{e}</li>" for e in curr_tx.get("explanations", [])])
+            fraud_icon = "⚠️" if curr_tx.get("is_fraud", False) else "ℹ️"
+            fraud_label = "FRAUD DETECTED" if curr_tx.get("is_fraud", False) else "SUSPICIOUS ACTIVITY"
+
+            st.html(textwrap.dedent(f"""
+            <div class="xai-box {xai_extra}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                    <div class="xai-title">{fraud_icon} {fraud_label} — Why was this flagged?</div>
+                    <span class="badge-{risk.lower()}">{pattern}</span>
+                </div>
+                <ul class="xai-list">
+                    {exps_html}
+                </ul>
+                <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #fde68a;padding-top:8px;">
+                    Model: <b>{curr_tx.get('model_used', 'GAT AML Model (PyG)')}</b> &nbsp;|&nbsp;
+                    Confidence: <b>{curr_tx.get('model_confidence', f'{risk_score}%')}</b> &nbsp;|&nbsp;
+                    Risk Score: <b style="color:{risk_col};">{risk_score}/100</b> (Raw GAT Sigmoid: <code>{curr_tx.get('gat_prob', 0):.6f}</code>)
+                </div>
+            </div>
+            """))
+
+            # Authorised Bank Auditor Decision Panel
+            if is_high or risk == "Medium":
+                tx_key = curr_tx.get("tx_id", f"GROUP-{gid}")
+                already_submitted = st.session_state.human_decision_submitted.get(tx_key)
+
+                st.html(textwrap.dedent(f"""
+                <div class="human-decision-panel">
+                    <div class="human-decision-title">
+                        🏦 Authorised Bank Auditor Decision Required — Group {gid}
+                    </div>
+                    <div style="font-size:12px;color:#92400e;margin-bottom:12px;">
+                        Risk Score: <b>{risk_score}/100</b> — This Fan-Out investigation requires an authorised bank auditor decision.
+                    </div>
+                </div>
+                """))
+
+                if already_submitted:
+                    decision_val = already_submitted["decision"]
+                    st.success(f"**Decision Recorded:** {decision_val}")
+                    st.info(f"**Authorised Bank Auditor Notes:** {already_submitted['notes'] or '(none)'}")
+                    if st.button("Revise Decision", key=f"revise_{tx_key}"):
+                        del st.session_state.human_decision_submitted[tx_key]
+                        st.rerun()
+                else:
+                    dec_col1, dec_col2 = st.columns([1, 1])
+                    with dec_col1:
+                        decision = st.radio(
+                            "**Authorised Bank Auditor Decision**",
+                            ["✅ Approve Transaction", "🚫 Block Transaction", "📤 Escalate to Senior Investigator"],
+                            key=f"decision_{tx_key}",
+                            index=2
+                        )
+                    with dec_col2:
+                        notes = st.text_area(
+                            "**Authorised Bank Auditor Notes**",
+                            placeholder="Add reasoning, observations, or escalation notes...",
+                            key=f"notes_{tx_key}",
+                            height=180
+                        )
+
+                    st.html("""
+                    <div class="human-decision-disclaimer">
+                        ⚠️ <b>Disclaimer:</b> By submitting, you confirm this decision is made by an
+                        AUTHORISED BANK AUDITOR. The GAT AML model provided supporting analysis only.
+                        This action will be logged and audited.
+                    </div>
+                    """)
+
+                    if st.button(f"📋 Submit Decision for Group {gid}", key=f"submit_{tx_key}", type="primary", use_container_width=True):
+                        fraud_data.submit_auditor_decision(tx_key, decision, notes)
+                        st.session_state.human_decision_submitted[tx_key] = {
+                            "decision": decision,
+                            "notes": notes,
+                            "timestamp": datetime.now().strftime("%d %b %Y, %I:%M %p")
+                        }
+                        if "Approve" in decision:
+                            rem_txs = fraud_data.get_all_flagged_senders()
+                            st.session_state.selected_tx_id = rem_txs[0]["tx_id"] if rem_txs else None
+                            st.session_state.selected_sub_tx = None
+                        st.rerun()
+
+            st.html(textwrap.dedent("""
+            <div class="ai-advisory" style="margin-top:16px;">
+                <span style="font-size:16px;">🤖</span>
+                <span>
+                    <b>AI Advisory:</b> The analysis above is generated by the GAT AML model to
+                    <b>support the fraud investigator's decision</b>. The AI does not block or approve
+                    transactions. All final decisions must be made by an AUTHORIZED BANK AUDITOR.
+                </span>
+            </div>
+            """))
+
+    # ════════════════════════════════════════════════════════════════════
+    #  RIGHT PANEL — Customer Profile (Source or Receiver)
+    # ════════════════════════════════════════════════════════════════════
+    with col_right:
+        if not all_txs:
+            st.html("""
+            <div class="profile-card profile-empty">
+                <div style="font-size:32px;margin-bottom:10px;">👤</div>
+                <div style="font-weight:700;font-size:14px;color:#475569;">No Account Selected</div>
+                <div style="font-size:11.5px;color:#94a3b8;margin-top:4px;">Stream transactions to view real-time customer behavioral profiles.</div>
+            </div>
+            """)
+        else:
+            sub_tx = st.session_state.selected_sub_tx
+
+            if sub_tx is None:
+                source_acc = curr_tx.get("account", "—")
+                sub_tx = {
+                    "account": source_acc,
+                    "to_account": source_acc,
+                    "is_source": True,
+                    "to_entity_name": curr_tx.get("name", "—"),
+                    "to_bank_name": curr_tx.get("bank_name", "—"),
+                    "to_bank_id": curr_tx.get("bank_id", "—"),
+                    "to_entity_id": curr_tx.get("entity_id", "—"),
+                    "payment_format": curr_tx.get("payment_format", "Wire"),
+                    "gat_signal": curr_tx.get("gat_signal", "HIGH"),
+                    "amount": curr_tx.get("amount_formatted", "—"),
+                }
+
+            acc_num = sub_tx.get("account") or sub_tx.get("to_account", "—")
+            is_src = sub_tx.get("is_source", False)
+            profile_label = "Source Sender Profile" if is_src else "Receiver Profile"
+
+            try:
+                profile = fraud_data.get_customer_profile(acc_num)
+            except Exception:
+                profile = {}
+
+            if not isinstance(profile, dict):
+                profile = {}
+
+            profile_name = profile.get("name") if profile.get("name") not in ("—", "Unknown", None, "") else sub_tx.get("to_entity_name", acc_num)
+            bank_name = profile.get("bank_name") if profile.get("bank_name") not in ("—", None, "") else sub_tx.get("to_bank_name", "—")
+            bank_id = profile.get("bank_id") if profile.get("bank_id") not in ("—", None, "") else sub_tx.get("to_bank_id", "—")
+            entity_id = profile.get("entity_id") if profile.get("entity_id") not in ("—", None, "") else sub_tx.get("to_entity_id", "—")
+            tot_inc = profile.get("total_incoming") if profile.get("total_incoming") not in ("—", None, "") else sub_tx.get("amount", "—")
+            tot_out = profile.get("total_outgoing", "—")
+            avg_in = profile.get("avg_incoming_amount", "—")
+            avg_out = profile.get("avg_outgoing_amount", "—")
+            max_in = profile.get("max_incoming_amount", "—")
+            max_out = profile.get("max_outgoing_amount", "—")
+            in_tx = profile.get("previous_incoming", sub_tx.get("previous_incoming", "—"))
+            out_tx = profile.get("previous_outgoing", sub_tx.get("previous_outgoing", "—"))
+            uniq_snds = profile.get("unique_senders", "—")
+            uniq_recs = profile.get("unique_receivers", "—")
+            tot_deg = profile.get("total_degree", "—")
+            net_flow = profile.get("net_flow", "—")
+
+            risk_tier = profile.get("risk_tier", "High Risk" if "HIGH" in str(sub_tx.get("gat_signal", "HIGH")).upper() else ("Medium Risk" if "MEDIUM" in str(sub_tx.get("gat_signal", "")).upper() else "Low Risk"))
+            tier_color = "#dc2626" if "High" in risk_tier else "#d97706" if "Medium" in risk_tier else "#16a34a"
+            payment_fmt = str(sub_tx.get('payment_format', '—'))
+
+            beh_rows = [
+                ("Total Incoming Amount", tot_inc),
+                ("Average Incoming Amount", avg_in),
+                ("Maximum Incoming Amount", max_in),
+                ("Incoming Transactions", str(in_tx)),
+                ("Unique Senders", str(uniq_senders) if (uniq_senders := uniq_snds) else str(uniq_snds)),
+                ("Total Outgoing Amount", tot_out),
+                ("Average Outgoing Amount", avg_out),
+                ("Maximum Outgoing Amount", max_out),
+                ("Outgoing Transactions", str(out_tx)),
+                ("Unique Receivers", str(uniq_recs)),
+                ("Total Degree", str(tot_deg)),
+                ("Net Flow", net_flow),
+            ]
+            beh_rows_html = "".join([f"<tr><td><b>{r[0]}</b></td><td style='text-align:right;'>{r[1]}</td></tr>" for r in beh_rows if r[1] != "—" and r[1] != ""])
 
             st.html(textwrap.dedent(f"""
             <div class="profile-card">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
                     <div>
-                        <div class="section-label">Receiver Profile</div>
-                        <div style="font-size:16px;font-weight:800;color:#0f172a;">{profile.get('name', to_acc)}</div>
-                        <div style="font-size:12px;color:#64748b;margin-top:2px;">{to_acc}</div>
+                        <div class="section-label">{profile_label}</div>
+                        <div style="font-size:16px;font-weight:800;color:#0f172a;">{profile_name}</div>
+                        <div style="font-size:12px;color:#64748b;margin-top:2px;">Account: <b>{acc_num}</b></div>
                     </div>
                     <div style="text-align:right;">
                         <span style="background:{tier_color}20;color:{tier_color};border:1px solid {tier_color}44;
@@ -793,20 +773,20 @@ if page == "Dashboard":
 
                 <div class="profile-metric-grid">
                     <div class="profile-metric-card">
-                        <div class="profile-metric-label">Account Type</div>
-                        <div class="profile-metric-val">{profile.get('account_type', '—')}</div>
+                        <div class="profile-metric-label">Bank Name</div>
+                        <div class="profile-metric-val" style="font-size:12px;">{bank_name}</div>
                     </div>
                     <div class="profile-metric-card">
-                        <div class="profile-metric-label">City</div>
-                        <div class="profile-metric-val">{profile.get('city', '—')}</div>
+                        <div class="profile-metric-label">Bank ID</div>
+                        <div class="profile-metric-val">{bank_id}</div>
                     </div>
                     <div class="profile-metric-card">
-                        <div class="profile-metric-label">Open Since</div>
-                        <div class="profile-metric-val" style="font-size:12px;">{profile.get('open_since', '—')}</div>
+                        <div class="profile-metric-label">Entity ID</div>
+                        <div class="profile-metric-val">{entity_id}</div>
                     </div>
                     <div class="profile-metric-card">
-                        <div class="profile-metric-label">Account Age (days)</div>
-                        <div class="profile-metric-val">{sub_tx.get('account_age_days', '—')}</div>
+                        <div class="profile-metric-label">Payment Format</div>
+                        <div class="profile-metric-val" style="font-size:12px;">{payment_fmt}</div>
                     </div>
                 </div>
 
@@ -819,405 +799,96 @@ if page == "Dashboard":
             </div>
             """))
 
-    # ── Live Streaming Auto-Rerun Loop ──
-    if st.session_state.get("is_live_streaming", False):
-        import stream_engine
-        import time
-        raw_tx = stream_engine.generate_raw_transaction()
-        new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
-        st.session_state.live_stream_count += 1
-        st.toast(f"📡 Real-Time Stream Ingested #{st.session_state.live_stream_count}: {raw_tx['from_account']} ➔ {raw_tx['to_account']} (${raw_tx['amount_paid']:,.2f} USD)", icon="📡")
-        time.sleep(st.session_state.get("live_stream_speed", 2.0))
-        st.rerun()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TRANSACTIONS PAGE
+#  GRAPH NETWORK PAGE
 # ══════════════════════════════════════════════════════════════════════════════
-
-elif page == "Transactions":
-    st.subheader("📊 All Transactions Log")
-    df_all = fraud_data.get_transactions_df()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        search_q = st.text_input("🔍 Search Transaction ID / Account", "")
-    with c2:
-        risk_filter = st.multiselect("Filter Risk Level", ["High", "Medium", "Low"], default=["High", "Medium", "Low"])
-    with c3:
-        min_amt = st.slider("Min Amount ($)", 0, 50000, 0)
-
-    filtered_df = df_all[df_all["risk"].isin(risk_filter) & (df_all["amount"] >= min_amt)]
-    if search_q:
-        filtered_df = filtered_df[
-            filtered_df["tx_id"].str.contains(search_q, case=False) |
-            filtered_df["account"].str.contains(search_q, case=False)
-        ]
-    st.dataframe(
-        filtered_df[["tx_id", "account", "timestamp", "amount_formatted", "risk", "risk_score", "pattern", "payment_format"]],
-        use_container_width=True
-    )
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  REAL-TIME SIMULATOR PAGE
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "⚡ Real-Time Simulator":
-    st.subheader("⚡ Real-Time Single-Transaction Streaming Engine & Model Inference Suite")
+elif page == "Graph Network":
+    st.subheader("🕸️ Money Trail — Graph Network Topology")
     st.markdown(
-        "Input raw transactions one-by-one (**From Bank, From Account, To Bank, To Account, Amount Paid, Amount Received, Currency, Format, Timestamp**). "
-        "As transactions arrive, the engine performs **EDA & feature engineering on the fly**, evaluates **Fan-Out out-degree growth**, "
-        "computes **GAT + LightGBM + Rule Engine** ensemble scores, updates the **Money Trail Graph live**, and re-colors nodes upon **Human Auditor Approval**!"
-    )
-
-    st.markdown("---")
-    
-    # Session state initialization for real-time streaming engine
-    if "stream_tx_list" not in st.session_state:
-        st.session_state.stream_tx_list = []
-    if "stream_step_index" not in st.session_state:
-        st.session_state.stream_step_index = 0
-
-    tab_single, tab_preset, tab_batch = st.tabs([
-        "📥 Single Transaction Streamer (Input Form)", 
-        "⚡ Step-by-Step Fan-Out Demo (1-by-1 Feed)", 
-        "✍️ Batch Table Editor"
-    ])
-
-    # ── TAB 1: Single Transaction Input Form ──
-    with tab_single:
-        st.markdown("#### 📥 Submit Individual Streaming Transaction")
-        st.markdown("Fill in raw transaction details as columns present in `HI-Small_Trans.csv`:")
-        
-        with st.form("single_tx_form", clear_on_submit=False):
-            f_col1, f_col2, f_col3 = st.columns(3)
-            with f_col1:
-                from_bank = st.text_input("From Bank", value="Bank of New York")
-                from_acc = st.text_input("From Account (Sender ID)", value="ACC_78421")
-                timestamp = st.text_input("Timestamp", value=datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
-            with f_col2:
-                to_bank = st.text_input("To Bank", value="Portugal Bank")
-                to_acc = st.text_input("To Account (Receiver ID)", value=f"ACC_9011{len(st.session_state.stream_tx_list)+1:02d}")
-                payment_format = st.selectbox("Payment Format", ["ACH", "Wire", "Credit Card", "Cheque", "Cash"], index=0)
-            with f_col3:
-                amount_paid = st.number_input("Amount Paid ($)", min_value=1.0, value=9500.0, step=100.0)
-                amount_rec = st.number_input("Amount Received ($)", min_value=1.0, value=9500.0, step=100.0)
-                payment_curr = st.selectbox("Payment Currency", ["US Dollar", "Euro", "UK Pound", "Rupee", "Yen"], index=0)
-
-            submitted = st.form_submit_button("➕ Stream Single Transaction (Compute EDA & Update Graph)", type="primary", use_container_width=True)
-            if submitted:
-                new_item = {
-                    "timestamp": timestamp,
-                    "from_bank": from_bank,
-                    "from_account": from_acc,
-                    "to_bank": to_bank,
-                    "to_account": to_acc,
-                    "amount_paid": amount_paid,
-                    "amount_received": amount_rec,
-                    "payment_currency": payment_curr,
-                    "payment_format": payment_format
-                }
-                st.session_state.stream_tx_list.append(new_item)
-                
-                # Execute EDA feature extraction and model inference for current accumulated stream
-                res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
-                st.session_state.selected_tx_id = res_tx["tx_id"]
-                st.success(f"✅ Streamed Tx #{len(st.session_state.stream_tx_list)} ({from_acc} ➔ {to_acc}): Calculated Out-Degree = {len(st.session_state.stream_tx_list)}, Ensemble Risk Score = {res_tx['risk_score']}/100!")
-                st.rerun()
-
-    # ── TAB 2: Step-by-Step Fan-Out Demo ──
-    with tab_preset:
-        st.markdown("#### ⚡ Real-Time Step-by-Step Fan-Out Stream Simulator")
-        st.markdown("Click **'Stream Next Transaction'** to feed transactions 1-by-1 (`ACC_78421 ➔ target`) and watch the GAT + LightGBM risk score dynamically escalate as out-degree grows!")
-
-        fanout_sequence = [
-            {"timestamp": "2026/09/21 14:01", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Portugal Bank", "to_account": "ACC_90112", "amount_paid": 9500.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-            {"timestamp": "2026/09/21 14:02", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Canada Bank", "to_account": "ACC_90113", "amount_paid": 9450.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-            {"timestamp": "2026/09/21 14:03", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "UK Bank", "to_account": "ACC_90114", "amount_paid": 9800.0, "payment_currency": "US Dollar", "payment_format": "Wire"},
-            {"timestamp": "2026/09/21 14:04", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Germany Bank", "to_account": "ACC_90115", "amount_paid": 9300.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-            {"timestamp": "2026/09/21 14:05", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Spain Bank", "to_account": "ACC_90116", "amount_paid": 9600.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-            {"timestamp": "2026/09/21 14:06", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Brazil Bank", "to_account": "ACC_90117", "amount_paid": 9750.0, "payment_currency": "US Dollar", "payment_format": "Wire"},
-            {"timestamp": "2026/09/21 14:07", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Japan Bank", "to_account": "ACC_90118", "amount_paid": 9200.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-            {"timestamp": "2026/09/21 14:08", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Russia Bank", "to_account": "ACC_90119", "amount_paid": 9900.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-            {"timestamp": "2026/09/21 14:09", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Italy Bank", "to_account": "ACC_90120", "amount_paid": 9650.0, "payment_currency": "US Dollar", "payment_format": "Wire"},
-            {"timestamp": "2026/09/21 14:10", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Israel Bank", "to_account": "ACC_90121", "amount_paid": 9400.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
-        ]
-
-        p_col1, p_col2, p_col3 = st.columns(3)
-        with p_col1:
-            if st.button("➡️ Stream Next Fan-Out Transaction (1-by-1 Feed)", type="primary", use_container_width=True):
-                if st.session_state.stream_step_index < len(fanout_sequence):
-                    st.session_state.stream_step_index += 1
-                    st.session_state.stream_tx_list = fanout_sequence[:st.session_state.stream_step_index]
-                    res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
-                    st.session_state.selected_tx_id = res_tx["tx_id"]
-                    st.success(f"✅ Streamed Step {st.session_state.stream_step_index}/10: Out-Degree = {st.session_state.stream_step_index}, Risk = {res_tx['risk_score']}/100!")
-                    st.rerun()
-                else:
-                    st.info("ℹ️ All 10 fan-out transactions have been streamed! Reset engine to restart.")
-        with p_col2:
-            if st.button("🚀 Stream All 10 Transactions at Once", use_container_width=True):
-                st.session_state.stream_step_index = 10
-                st.session_state.stream_tx_list = fanout_sequence
-                res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
-                st.session_state.selected_tx_id = res_tx["tx_id"]
-                st.success("✅ Streamed full 10-tx burst!")
-                st.rerun()
-        with p_col3:
-            if st.button("🗑️ Reset Real-Time Stream Engine", use_container_width=True):
-                st.session_state.stream_tx_list = []
-                st.session_state.stream_step_index = 0
-                st.rerun()
-
-    # ── TAB 3: Batch Table Editor ──
-    with tab_batch:
-        st.markdown("#### ✍️ Batch Transaction Table Editor")
-        if "editor_data" not in st.session_state:
-            st.session_state.editor_data = pd.DataFrame(columns=["#", "Sender Account ID", "Sender Bank", "Receiver Account", "Amount ($)", "Payment Format", "Currency"])
-
-        edited_df = st.data_editor(
-            st.session_state.editor_data,
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            key="table_editor_instance"
-        )
-
-        if st.button("⚡ Run Real-Time AI Model Inference on Batch Table", type="primary", use_container_width=True):
-            if edited_df.empty:
-                st.warning("⚠️ Please enter at least 1 transaction in the table before running inference.")
-            else:
-                custom_txs = []
-                for idx, row in edited_df.iterrows():
-                    custom_txs.append({
-                        "timestamp": f"2026/09/21 14:{idx+1:02d}",
-                        "from_bank": str(row.get("Sender Bank", "GlobalTrust Bank")),
-                        "from_account": str(row.get("Sender Account ID", "ACC_78421")),
-                        "to_bank": "Target Bank",
-                        "to_account": str(row.get("Receiver Account", f"ACC_9011{idx+1}")),
-                        "amount_paid": float(row.get("Amount ($)", 1000.0) or 1000.0),
-                        "payment_currency": "US Dollar" if str(row.get("Currency", "USD")).upper() in ["USD", "US DOLLAR"] else str(row.get("Currency", "US Dollar")),
-                        "payment_format": str(row.get("Payment Format", "ACH"))
-                    })
-                st.session_state.stream_tx_list = custom_txs
-                new_tx = fraud_data.add_realtime_simulation_transaction(custom_txs)
-                st.session_state.selected_tx_id = new_tx["tx_id"]
-                st.success(f"✅ Real-Time Model Inference Complete for {new_tx['tx_id']}!")
-                st.rerun()
-
-    # ── DISPLAY LIVE STREAMING RESULTS & GRAPH ──
-    st.markdown("---")
-    curr_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
-    n_streamed = len(st.session_state.stream_tx_list) if st.session_state.stream_tx_list else len(curr_tx.get("to_accounts", []))
-    
-    st.markdown(f"### 📊 Real-Time Stream Execution & Model Score Breakdown — `{curr_tx['tx_id']}`")
-    st.caption(f"Streamed Target Out-Degree: **{n_streamed} Receiver Accounts** | Sender Account: **{curr_tx['account']}** | Total Amount: **{curr_tx['amount_formatted']}**")
-
-    col_r0, col_r1, col_r2, col_r3, col_r4 = st.columns(5)
-    with col_r0:
-        st.metric("Accumulated Out-Degree", f"{n_streamed} Txs")
-    with col_r1:
-        st.metric("GAT Graph Score", curr_tx.get("gat_confidence", "86%"))
-    with col_r2:
-        st.metric("LightGBM Score", curr_tx.get("lgb_confidence", "88%"))
-    with col_r3:
-        st.metric("Rule Engine Score", curr_tx.get("rule_confidence", "95%"))
-    with col_r4:
-        st.metric("Ensemble Risk Score", f"{curr_tx['risk_score']}/100", delta=curr_tx['risk'])
-
-    # Dynamic SHAP Explainability Box
-    box_class = "xai-box-high" if curr_tx["risk"] == "High" else "xai-box-medium" if curr_tx["risk"] == "Medium" else "xai-box-low"
-    risk_emoji = "🚨" if curr_tx["risk"] == "High" else "⚠️" if curr_tx["risk"] == "Medium" else "✅"
-    
-    st.html(textwrap.dedent(f"""
-    <div class="xai-box {box_class}">
-        <div class="xai-title">{risk_emoji} Real-Time SHAP Feature Impact & Model Explainability</div>
-        <ul class="xai-list">
-            {"".join([f"<li>{e}</li>" for e in curr_tx["explanations"]])}
-        </ul>
-    </div>
-    """))
-
-    # Live Interactive Network Graph
-    st.markdown("#### 🕸️ Live Network Topology Graph (Updated Real-Time)")
-    fig_sim = graph_vis.render_plotly_graph(curr_tx["tx_id"], include_2hop=True)
-    st.plotly_chart(fig_sim, use_container_width=True)
-
-    # ── Authorised Bank Auditor Decision Panel ──
-    st.markdown("#### ⚖️ Authorised Bank Auditor Decision Panel")
-    st.markdown("Review the real-time stream graph above. Submitting a decision re-colors graph nodes and updates risk score live:")
-
-    aud_col1, aud_col2 = st.columns([1, 1])
-    with aud_col1:
-        auditor_decision_choice = st.radio(
-            "Select Compliance Decision",
-            ["✅ Approve / Mark Legitimate", "🚨 Flag as Confirmed Fraud / Laundering"],
-            key="stream_auditor_decision_choice"
-        )
-    with aud_col2:
-        auditor_notes_text = st.text_area(
-            "Auditor Compliance Notes",
-            placeholder="e.g., Verified legitimate payroll transfer or vendor invoice payment...",
-            key="stream_auditor_notes_text",
-            height=120
-        )
-
-    if st.button("📋 Submit Auditor Decision & Update Live Graph Topology", type="primary", use_container_width=True):
-        dec_str = "Legitimate" if "Approve" in auditor_decision_choice else "Fraud"
-        fraud_data.update_auditor_decision(curr_tx["tx_id"], dec_str, auditor_notes_text)
-        st.success(f"✅ Recorded Auditor Decision ({auditor_decision_choice})! Updated risk score and graph topology.")
-        st.rerun()
-
-    # ── Table Log of Streamed Transactions ──
-    if st.session_state.stream_tx_list:
-        st.markdown("#### 📜 Streamed Transactions Log")
-        df_stream_log = pd.DataFrame(st.session_state.stream_tx_list)
-        df_stream_log.insert(0, "#", range(1, len(df_stream_log) + 1))
-        st.dataframe(df_stream_log, use_container_width=True)
-
-elif page == "Alerts / Graph Network":
-    st.subheader("🕸️ Money Trail")
-    st.markdown(
-        "Visualizing transactional connections up to **2 hops**. "
+        "Visualizing transactional connections for the selected Fan-Out group. "
         "Hover over any node to see the customer profile. "
-        "Sender (★) → Hop-1 Receivers (●) → Hop-2 Downstream Nodes (◆)"
+        "Sender (★) → Hop-1 Receivers (●)"
     )
 
-    # Pre-select the tx from dashboard if navigated via the graph button
-    default_sel = st.session_state.selected_tx_id
-    tx_options = [t["tx_id"] for t in fraud_data.TRANSACTIONS]
-    default_idx = tx_options.index(default_sel) if default_sel in tx_options else 0
+    all_groups = fraud_data.get_all_flagged_senders()
+    if not all_groups:
+        st.info("No active fan-out investigations in graph memory yet. Stream transactions from the sidebar to visualize the money trail.")
+    else:
+        group_options = [g["tx_id"] for g in all_groups]
+        default_sel = st.session_state.selected_tx_id
+        default_idx = group_options.index(default_sel) if default_sel in group_options else 0
 
-    col_g1, col_g2 = st.columns([2, 1])
-    with col_g1:
-        sel_tx = st.selectbox(
-            "Select Transaction Network to Inspect",
-            tx_options,
-            index=default_idx
-        )
-    with col_g2:
-        show_2hop = st.checkbox("Show 2-Hop Neighbors", value=True)
+        col_g1, col_g2 = st.columns([2, 1])
+        with col_g1:
+            sel_tx = st.selectbox(
+                "Select Fan-out Group Network to Inspect",
+                group_options,
+                index=default_idx
+            )
+        with col_g2:
+            show_2hop = st.checkbox("Show 2-Hop Neighbors", value=False, disabled=True, help="Hop-2 nodes are derived only when complete downstream data is available in the dataset.")
 
-    tx_info = fraud_data.get_transaction_by_id(sel_tx)
+        tx_info = fraud_data.get_transaction_by_id(sel_tx)
+        if not isinstance(tx_info, dict) or not tx_info:
+            tx_info = all_groups[0] if all_groups else {}
 
-    # Info bar
-    risk_col = "#dc2626" if tx_info["risk"] == "High" else "#d97706" if tx_info["risk"] == "Medium" else "#dc2626"
-    st.html(textwrap.dedent(f"""
-    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
-                padding:14px 18px;margin-bottom:16px;display:flex;gap:28px;align-items:center;">
-        <div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;">PATTERN</div>
-            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info['pattern']}</div>
+        risk_col = "#dc2626" if tx_info.get("risk") == "High" else "#d97706" if tx_info.get("risk") == "Medium" else "#16a34a"
+        st.html(textwrap.dedent(f"""
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
+                    padding:14px 18px;margin-bottom:16px;display:flex;gap:28px;align-items:center;">
+            <div>
+                <div style="font-size:11px;color:#64748b;font-weight:600;">PATTERN</div>
+                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('pattern', 'FAN-OUT')}</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#64748b;font-weight:600;">GAT RISK SCORE</div>
+                <div style="font-size:14px;font-weight:700;color:{risk_col};">{tx_info.get('risk_score', 100)}/100</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#64748b;font-weight:600;">MODEL</div>
+                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('model_used', 'GAT AML Model')}</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#64748b;font-weight:600;">SENDER</div>
+                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('account', '—')} ({tx_info.get('name') or fraud_data.get_customer_profile(tx_info.get('account', '')).get('name', '—')})</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#64748b;font-weight:600;">TOTAL AMOUNT</div>
+                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('amount_formatted', '—')}</div>
+            </div>
         </div>
-        <div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;">RISK SCORE</div>
-            <div style="font-size:14px;font-weight:700;color:{risk_col};">{tx_info['risk_score']}/100</div>
+        """))
+
+        fig_g = graph_vis.render_plotly_graph(sel_tx, include_2hop=False)
+        st.plotly_chart(fig_g, use_container_width=True)
+
+        st.html(textwrap.dedent("""
+        <div style="display:flex;gap:24px;justify-content:center;margin-top:4px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
+                <span style="width:14px;height:14px;background:#ef4444;border-radius:50%;display:inline-block;"></span>
+                Sender Account
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
+                <span style="width:14px;height:14px;background:#f59e0b;border-radius:50%;display:inline-block;"></span>
+                Hop-1 Direct Receivers
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
+                <span style="width:28px;height:2px;background:#ef4444;display:inline-block;"></span>
+                Hop-1 Transfer (amount shown)
+            </div>
         </div>
-        <div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;">MODEL</div>
-            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info['model_used']}</div>
+        """))
+
+        st.markdown("---")
+        st.html(textwrap.dedent(f"""
+        <div style="background:#fff5f5;border:1px solid #fecaca;border-radius:10px;padding:14px 16px;">
+            <div style="font-weight:700;font-size:13px;color:#dc2626;margin-bottom:8px;">⚠️ Why was this flagged?</div>
+            <ul style="margin:0;padding-left:18px;font-size:12px;color:#334155;line-height:1.8;">
+                {"".join([f"<li>{e}</li>" for e in tx_info.get("explanations", [])])}
+            </ul>
         </div>
-        <div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;">SENDER</div>
-            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info['account']}</div>
-        </div>
-        <div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;">AMOUNT</div>
-            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info['amount_formatted']}</div>
-        </div>
-    </div>
-    """))
+        """))
 
-    fig_g = graph_vis.render_plotly_graph(sel_tx, include_2hop=show_2hop)
-    st.plotly_chart(fig_g, use_container_width=True)
 
-    # Legend explanation
-    st.html(textwrap.dedent("""
-    <div style="display:flex;gap:24px;justify-content:center;margin-top:4px;flex-wrap:wrap;">
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
-            <span style="width:14px;height:14px;background:#ef4444;border-radius:50%;display:inline-block;"></span>
-            Sender Account
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
-            <span style="width:14px;height:14px;background:#f59e0b;border-radius:50%;display:inline-block;"></span>
-            Hop-1 Direct Receivers
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
-            <span style="width:14px;height:14px;background:#e2e8f0;border:1px solid #cbd5e1;border-radius:4px;display:inline-block;"></span>
-            Hop-2 Downstream Nodes
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
-            <span style="width:28px;height:2px;background:#ef4444;display:inline-block;"></span>
-            Hop-1 Transfer (amount shown)
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#475569;">
-            <span style="width:28px;height:2px;background:#e2e8f0;border-bottom:2px dashed #cbd5e1;display:inline-block;"></span>
-            Hop-2 Transfer
-        </div>
-    </div>
-    """))
 
-    st.markdown("---")
-    # XAI explanations on graph page too
-    st.html(textwrap.dedent(f"""
-    <div style="background:#fff5f5;border:1px solid #fecaca;border-radius:10px;padding:14px 16px;">
-        <div style="font-weight:700;font-size:13px;color:#dc2626;margin-bottom:8px;">⚠️ Why was this flagged?</div>
-        <ul style="margin:0;padding-left:18px;font-size:12px;color:#334155;line-height:1.8;">
-            {"".join([f"<li>{e}</li>" for e in tx_info["explanations"]])}
-        </ul>
-    </div>
-    """))
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CUSTOMERS PAGE
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "Customers":
-    st.subheader("👤 Customer Profiling & Network Risk")
-    acc_sel = st.selectbox("Select Account ID", list(fraud_data.CUSTOMER_PROFILES.keys()))
-    prof = fraud_data.get_customer_profile(acc_sel)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"**Name:** {prof.get('name', '—')}")
-        st.markdown(f"**KYC Status:** {prof.get('kyc_status', '—')}")
-        st.markdown(f"**City:** {prof.get('city', '—')}")
-        st.markdown(f"**Account Type:** {prof.get('account_type', '—')}")
-    with c2:
-        st.markdown(f"**Risk Tier:** {prof.get('risk_tier', '—')}")
-        st.markdown(f"**Open Since:** {prof.get('open_since', '—')}")
-        st.markdown(f"**Last Login:** {prof.get('last_login', '—')}")
-        st.markdown(f"**Devices:** {prof.get('device_count', '—')}")
-
-    st.dataframe(pd.DataFrame(prof["behavior_summary"]), use_container_width=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  REMAINING PAGES
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "Reports":
-    st.subheader("📄 Automated Compliance & Fraud Reports")
-    st.markdown("Generate AI-driven regulatory reports for compliance and operations stakeholders.")
-    if st.button("Generate Summary Compliance PDF Report"):
-        st.success("✅ Report generated successfully for 1,80,256 transactions processed.")
-
-elif page == "Settings":
-    st.subheader("⚙️ System & Graph AI Settings")
-    st.slider("GraphSAGE Risk Detection Sensitivity", 0.0, 1.0, 0.75)
-    st.selectbox("Primary Baseline Model", ["GraphSAGE + XGBoost Ensemble", "Isolation Forest", "TabPFN", "GNN Convolutional"])
-
-elif page == "Help":
-    st.subheader("❓ Help & Documentation")
-    st.markdown("""
-### Fraud Patterns Explained:
-- **Fan-Out**: Single source account transferring money to multiple newly opened receiver accounts in a short time frame.
-- **Circular Money Flow**: Funds transferred in a ring (A ➔ B ➔ C ➔ A) to disguise origin.
-- **Account Takeover**: Unexpected login locations and immediate high-value transfer out of a dormant account.
-- **Structuring / Smurfing**: Breaking down large sums into multiple smaller transfers to stay below regulatory reporting limits.
-- **Rapid Velocity**: Unusually high transaction frequency within a short time window.
-
-### How to use the Dashboard:
-1. Click a **Flagged Account** in the left panel to load its transactions.
-2. Click any **row** in the transaction table to view the **receiver's customer profile** on the right.
-3. Tap **"View as Graph Network"** to visualize the 2-hop transaction network.
-4. For **High Risk** transactions, submit your decision in the **Authorised Bank Auditor Decision Panel**.
-
-### AI Advisory Disclaimer:
-The AI model provides pattern analysis and risk scores to *support* the investigation. **Final decisions must always be made by an AUTHORIZED BANK AUDITOR.**
-    """)
