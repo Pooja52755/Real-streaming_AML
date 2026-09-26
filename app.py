@@ -581,7 +581,13 @@ if page == "Dashboard":
 
             is_high = (risk == "High")
             xai_extra = "xai-box-high" if is_high else ""
-            exps_html = "".join([f"<li>{e}</li>" for e in curr_tx.get("explanations", [])])
+            exps_clean = []
+            for e in curr_tx.get("explanations", []):
+                if "risk probability" in e.lower() or "gat graph" in e.lower():
+                    exps_clean.append(f"GAT Neural Network Fraud Signal: {risk.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
+                else:
+                    exps_clean.append(e)
+            exps_html = "".join([f"<li>{e}</li>" for e in exps_clean])
             fraud_icon = "⚠️" if curr_tx.get("is_fraud", False) else "ℹ️"
             fraud_label = "FRAUD DETECTED" if curr_tx.get("is_fraud", False) else "SUSPICIOUS ACTIVITY"
 
@@ -880,11 +886,20 @@ elif page == "Graph Network":
         """))
 
         st.markdown("---")
+        tx_risk = tx_info.get("risk", "High")
+        tx_score = tx_info.get("risk_score", 92)
+        tx_clean_exps = []
+        for e in tx_info.get("explanations", []):
+            if "risk probability" in e.lower() or "gat graph" in e.lower():
+                tx_clean_exps.append(f"GAT Neural Network Fraud Signal: {tx_risk.upper()} ({tx_score}% Confidence · Risk Score: {tx_score}/100)")
+            else:
+                tx_clean_exps.append(e)
+
         st.html(textwrap.dedent(f"""
         <div style="background:#fff5f5;border:1px solid #fecaca;border-radius:10px;padding:14px 16px;">
             <div style="font-weight:700;font-size:13px;color:#dc2626;margin-bottom:8px;">⚠️ Why was this flagged?</div>
             <ul style="margin:0;padding-left:18px;font-size:12px;color:#334155;line-height:1.8;">
-                {"".join([f"<li>{e}</li>" for e in tx_info.get("explanations", [])])}
+                {"".join([f"<li>{e}</li>" for e in tx_clean_exps])}
             </ul>
         </div>
         """))
