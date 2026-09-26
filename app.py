@@ -194,6 +194,10 @@ if "human_decision_submitted" not in st.session_state:
     st.session_state.human_decision_submitted = {}
 if "goto_graph" not in st.session_state:
     st.session_state.goto_graph = False
+if "is_streaming" not in st.session_state:
+    st.session_state.is_streaming = False
+if "stream_delay" not in st.session_state:
+    st.session_state.stream_delay = 1.0
 
 # ─── Sidebar ─────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -237,51 +241,45 @@ with st.sidebar:
     )
     st.progress(min(1.0, curr_tx / max(1, tot_tx)))
 
+    # Main Stream Data continuous playback button
+    if not st.session_state.is_streaming:
+        if st.button("▶️ Stream Data", key="btn_stream_auto", type="primary", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+            st.session_state.is_streaming = True
+            fraud_data.step_stream(1)
+            st.rerun()
+    else:
+        if st.button("⏸️ Stop Streaming", key="btn_stream_stop", type="secondary", use_container_width=True):
+            st.session_state.is_streaming = False
+            st.rerun()
+
+    # Manual Single & Multi-step buttons
     btn_s1, btn_s2 = st.columns(2)
     with btn_s1:
-        if st.button("▶ Step +1", key="btn_stream_1", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+        if st.button("▶ Step +1", key="btn_stream_1", use_container_width=True, disabled=(curr_tx >= tot_tx or st.session_state.is_streaming)):
             fraud_data.step_stream(1)
             st.rerun()
     with btn_s2:
-        if st.button("⏩ Step +10", key="btn_stream_10", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+        if st.button("⏩ Step +10", key="btn_stream_10", use_container_width=True, disabled=(curr_tx >= tot_tx or st.session_state.is_streaming)):
             fraud_data.step_stream(10)
             st.rerun()
 
-    col_live1, col_live2 = st.columns(2)
-    with col_live1:
-        if st.button("⏱️ Stream 5 Live", key="btn_stream_5_live", use_container_width=True, disabled=(curr_tx >= tot_tx), help="Streams 5 transactions one-by-one with 1 second delay"):
-            steps = min(5, tot_tx - curr_tx)
-            with st.status(f"⚡ Streaming {steps} txs live (1s/tx)...", expanded=True) as s:
-                for i in range(steps):
-                    tx = fraud_data.step_stream(1)
-                    stat = fraud_data.get_stream_status()
-                    last = stat.get("last_tx") or {}
-                    fo_str = "🚨 Fan-out!" if last.get("is_fanout") else "1-hop"
-                    s.write(f"Tx {stat['current_idx']}/{tot_tx}: `{last.get('from_account')}` ➔ `{last.get('to_account')}` ({last.get('amount_formatted')}) | {fo_str}")
-                    time.sleep(1.0)
-                s.update(label=f"✅ {steps} Transactions Ingested!", state="complete", expanded=False)
-            st.rerun()
-    with col_live2:
-        if st.button("⏱️ Stream 10 Live", key="btn_stream_10_live", use_container_width=True, disabled=(curr_tx >= tot_tx), help="Streams 10 transactions one-by-one with 1 second delay"):
-            steps = min(10, tot_tx - curr_tx)
-            with st.status(f"⚡ Streaming {steps} txs live (1s/tx)...", expanded=True) as s:
-                for i in range(steps):
-                    tx = fraud_data.step_stream(1)
-                    stat = fraud_data.get_stream_status()
-                    last = stat.get("last_tx") or {}
-                    fo_str = "🚨 Fan-out!" if last.get("is_fanout") else "1-hop"
-                    s.write(f"Tx {stat['current_idx']}/{tot_tx}: `{last.get('from_account')}` ➔ `{last.get('to_account')}` ({last.get('amount_formatted')}) | {fo_str}")
-                    time.sleep(1.0)
-                s.update(label=f"✅ {steps} Transactions Ingested!", state="complete", expanded=False)
-            st.rerun()
+    # Streaming Speed selector
+    st.session_state.stream_delay = st.select_slider(
+        "Stream Speed",
+        options=[0.5, 1.0, 2.0],
+        value=st.session_state.stream_delay,
+        format_func=lambda s: f"{s}s / tx",
+        disabled=st.session_state.is_streaming
+    )
 
     btn_s3, btn_s4 = st.columns(2)
     with btn_s3:
-        if st.button("⚡ Run All 100", key="btn_stream_all", use_container_width=True, disabled=(curr_tx >= tot_tx)):
+        if st.button("⚡ Run All 100", key="btn_stream_all", use_container_width=True, disabled=(curr_tx >= tot_tx or st.session_state.is_streaming)):
             fraud_data.step_stream(tot_tx - curr_tx)
             st.rerun()
     with btn_s4:
         if st.button("🔄 Reset to 0", key="btn_stream_reset", use_container_width=True):
+            st.session_state.is_streaming = False
             fraud_data.reset_stream()
             st.session_state.selected_tx_id = None
             st.session_state.selected_sub_tx = None
@@ -889,6 +887,19 @@ elif page == "Graph Network":
             </ul>
         </div>
         """))
+
+# ─── Automated Streaming Loop ─────────────────────────────────────────────
+if st.session_state.get("is_streaming", False):
+    status_now = fraud_data.get_stream_status()
+    if status_now["current_idx"] < status_now["total_txs"]:
+        time.sleep(st.session_state.get("stream_delay", 1.0))
+        fraud_data.step_stream(1)
+        st.rerun()
+    else:
+        st.session_state.is_streaming = False
+        st.toast("🎉 Live Streaming Completed! All 100 transactions processed.", icon="✅")
+        st.rerun()
+
 
 
 
