@@ -797,7 +797,7 @@ if page == "Dashboard":
 #  GRAPH NETWORK PAGE
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Graph Network":
-    st.subheader(" Money Trail — Graph Network Topology")
+    st.subheader(" Money Trail")
     st.markdown(
         "Visualizing transactional connections for the selected Fan-Out group. "
         "Hover over any node to see the customer profile. "
