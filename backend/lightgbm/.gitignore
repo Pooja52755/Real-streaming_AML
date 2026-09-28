@@ -221,4 +221,5 @@ __marimo__/
 *.parquet
 *.npy
 *.json
+!aml_lightgbm_metadata.json
 config.py
