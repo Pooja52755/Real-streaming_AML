@@ -131,8 +131,14 @@ class RealTimeStreamingEngine:
         self.edge_scaler = StandardScaler()
         self._init_scalers()
 
+        # LightGBM Model
+        self.lgb_model = None
+        self.lgb_feature_names = []
+        self._load_lightgbm_model()
+
         # Dynamic State
         self.reset_state()
+        self._load_state_from_disk()
 
     def _load_model(self):
         if os.path.exists(GAT_CKPT_PATH):
@@ -147,6 +153,30 @@ class RealTimeStreamingEngine:
                 print(f"Error loading GAT model: {e}")
         else:
             print(f"Warning: GAT checkpoint not found at {GAT_CKPT_PATH}")
+
+    def _load_lightgbm_model(self):
+        lgb_path = "backend/lightgbm/aml_lightgbm_model.pkl"
+        lgb_meta_path = "backend/lightgbm/aml_lightgbm_metadata.json"
+        if os.path.exists(lgb_path) and os.path.exists(lgb_meta_path):
+            try:
+                import joblib
+                self.lgb_model = joblib.load(lgb_path)
+                with open(lgb_meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                self.lgb_feature_names = meta.get("feature_names", [])
+                print(f"Loaded LightGBM AML model ({len(self.lgb_feature_names)} features).")
+            except Exception as e:
+                print(f"Warning: Could not load LightGBM model: {e}")
+
+    def _load_state_from_disk(self):
+        if os.path.exists(STATE_JSON_PATH):
+            try:
+                with open(STATE_JSON_PATH, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                if "auditor_decisions" in state and isinstance(state["auditor_decisions"], dict):
+                    self.auditor_decisions.update(state["auditor_decisions"])
+            except Exception:
+                pass
 
     def _load_raw_data(self):
         # 1. Accounts Metadata
@@ -399,21 +429,49 @@ class RealTimeStreamingEngine:
         msg_idx = torch.tensor([[0, 1], [1, 0]], dtype=torch.long).to(self.device)
         msg_attr = torch.cat([edge_tensor, edge_tensor], dim=0)
 
+        # 1. GAT Model Forward Pass (Graph Attention Network)
         gat_prob = 0.50
         if self.model is not None:
             with torch.no_grad():
                 logit = self.model(x_tensor, msg_idx, msg_attr, t_edge_idx, edge_tensor)
                 gat_prob = float(torch.sigmoid(logit).item())
 
-        # Determine Risk Level and Fan-Out Pattern
-        # 1st transaction: No fan-out yet.
-        # Determine Risk Level and Fan-Out Pattern
-        # 1st transaction: No fan-out yet.
-        # When unique receivers >= 2: Fan-Out is detected!
+        # 2. LightGBM Model Forward Pass (Graph Motif & Tabular Booster)
+        lgb_prob = 0.00020
+        if self.lgb_model is not None and self.lgb_feature_names:
+            try:
+                lgb_dict = {col: 0.0 for col in self.lgb_feature_names}
+                lgb_dict["src-vertex-fan-out"] = float(curr_unique_recv)
+                lgb_dict["src-vertex-degree-out"] = float(curr_out_cnt)
+                lgb_dict["src-vertex-degree-in"] = float(src_prof["incoming_transactions"])
+                lgb_dict["dst-vertex-degree-in"] = float(dst_prof["incoming_transactions"])
+                lgb_dict["dst-vertex-degree-out"] = float(dst_prof["outgoing_transactions"])
+                lgb_dict["fan-out 2-4"] = 1.0 if 2 <= curr_unique_recv <= 4 else 0.0
+                lgb_dict["fan-out 4+"] = 1.0 if curr_unique_recv > 4 else 0.0
+                lgb_dict["degree-out 2-4"] = 1.0 if 2 <= curr_out_cnt <= 4 else 0.0
+                lgb_dict["degree-out 4+"] = 1.0 if curr_out_cnt > 4 else 0.0
+                lgb_dict["src-vertex-out-max-amount"] = float(src_prof["maximum_outgoing_amount"])
+                lgb_dict["src-vertex-in-max-amount"] = float(src_prof["maximum_incoming_amount"])
+                lgb_dict["dst-vertex-in-max-amount"] = float(dst_prof["maximum_incoming_amount"])
+                out_amts = src_prof["out_amounts"]
+                lgb_dict["src-vertex-out-median-amount"] = float(np.median(out_amts)) if out_amts else float(amt_paid_usd)
+                lgb_dict["hour_of_day"] = float(hr)
+                lgb_dict["day_of_week"] = float(dow)
+                lgb_dict["different_currency"] = 1.0 if pay_curr != rec_curr else 0.0
+                lgb_dict["amount_bin"] = float(min(9, int(np.log1p(amt_paid_usd))))
+                
+                df_lgb = pd.DataFrame([lgb_dict])[self.lgb_feature_names]
+                lgb_prob = float(self.lgb_model.predict(df_lgb)[0])
+            except Exception:
+                lgb_prob = 0.00020
+
+        # 3. Ensemble Risk Determination (GAT + LightGBM + Fan-Out Topology)
         is_fanout = (curr_unique_recv >= 2)
+        gat_anomaly = (gat_prob >= 0.00030)
+        lgb_anomaly = (lgb_prob >= 0.00028)
 
         if is_fanout:
-            if curr_unique_recv >= 3 or gat_prob >= 0.00030:
+            if curr_unique_recv >= 3 or gat_anomaly or lgb_anomaly:
                 risk_tier = "High"
                 risk_score = min(98, max(82, 80 + int(curr_unique_recv * 3)))
             else:
@@ -434,6 +492,7 @@ class RealTimeStreamingEngine:
             "currency": pay_curr,
             "payment_format": pay_fmt,
             "gat_prob": gat_prob,
+            "lgb_prob": lgb_prob,
             "risk_tier": risk_tier,
             "risk_score": risk_score,
             "is_fanout": is_fanout,
@@ -464,6 +523,7 @@ class RealTimeStreamingEngine:
                         "risk": risk_tier,
                         "risk_score": risk_score,
                         "gat_prob": gat_prob,
+                        "lgb_prob": lgb_prob,
                         "gat_signal": risk_tier.upper(),
                         "actual_label": 1 if is_laundering else 0,
                         "pattern": f"Max {curr_unique_recv}-degree Fan-Out",
@@ -478,13 +538,13 @@ class RealTimeStreamingEngine:
                         "unique_receivers": curr_unique_recv,
                         "unique_senders": len(src_prof["unique_senders"]),
                         "is_fraud": True,
-                        "model_used": "GAT AML Model (PyG)",
+                        "model_used": "GAT (PyG) + LightGBM Ensemble",
                         "model_confidence": f"{risk_score}%",
                         "explanations": [
                             f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
                             f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                             f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                            f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
+                            f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
                         ]
                     }
                 else:
@@ -495,6 +555,7 @@ class RealTimeStreamingEngine:
                     inv["gat_signal"] = risk_tier.upper()
                     inv["risk_score"] = max(inv["risk_score"], risk_score)
                     inv["gat_prob"] = gat_prob
+                    inv["lgb_prob"] = lgb_prob
                     inv["model_confidence"] = f"{risk_score}%"
                     inv["pattern"] = f"Max {curr_unique_recv}-degree Fan-Out"
                     inv["amount"] = src_prof["total_outgoing_amount"]
@@ -505,7 +566,7 @@ class RealTimeStreamingEngine:
                         f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
                         f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                         f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                        f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
+                        f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
                     ]
 
         self._save_state_to_disk()
@@ -513,11 +574,12 @@ class RealTimeStreamingEngine:
 
     def _save_state_to_disk(self):
         try:
-            active_invs = [v for k, v in self.investigations.items() if self.auditor_decisions.get(k, {}).get("decision") != "APPROVE"]
+            active_invs = [v for k, v in self.investigations.items() if "APPROVE" not in str(self.auditor_decisions.get(k, {}).get("decision", "")).upper()]
             state = {
                 "current_idx": self.current_idx,
                 "total_txs": len(self.df_trans) if self.df_trans is not None else 0,
                 "active_investigations_count": len(active_invs),
+                "auditor_decisions": self.auditor_decisions,
                 "last_updated": datetime.now().isoformat()
             }
             with open(STATE_JSON_PATH, "w", encoding="utf-8") as f:
@@ -546,18 +608,19 @@ class RealTimeStreamingEngine:
         for e in inv.get("explanations", []):
             if "payment format" in e.lower() or "currency:" in e.lower():
                 continue
-            if "risk probability" in e.lower() or "gat graph" in e.lower():
-                cleaned_exps.append(f"GAT Neural Network Fraud Signal: {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
+            if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
+                cleaned_exps.append(f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
             else:
                 cleaned_exps.append(e)
         inv["explanations"] = cleaned_exps
+        inv["model_used"] = "GAT (PyG) + LightGBM Ensemble"
         return inv
 
     def get_active_investigations(self) -> List[Dict[str, Any]]:
         active = []
         for inv_id, inv in self.investigations.items():
             aud_dec = self.auditor_decisions.get(inv_id)
-            if aud_dec and "Approve" in aud_dec.get("decision", ""):
+            if aud_dec and "APPROVE" in str(aud_dec.get("decision", "")).upper():
                 continue
             active.append(self._clean_inv(inv))
         active.sort(key=lambda x: x.get("risk_score", 0), reverse=True)

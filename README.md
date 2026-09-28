@@ -36,14 +36,12 @@ Real-streaming_AML/
 │       └── assets/                   # Architecture diagrams and PR curves
 │
 ├── app.py                            # Streamlit interactive AML dashboard
-├── fraud_data.py                     # Dynamic graph engine & GAT inference pipeline
+├── fraud_data.py                     # Dynamic graph engine & GAT + LightGBM ensemble inference pipeline
 ├── graph_vis.py                      # Interactive Plotly graph network visualizer
 ├── stream_engine.py                  # Standalone CLI streaming simulation script
 ├── backend_api.py                    # REST API endpoints for model inference & alerts
-├── verify.py                         # Environment and model weight verification script
-├── generate.py                       # Synthetic streaming data generation script
-├── generate.ipynb                    # Notebook for stream generation & testing
-├── live_stream_state.json            # State persistence for streaming index & alerts
+├── verify.py                         # In-memory diagnostic & verification test suite
+├── live_stream_state.json            # State persistence for streaming index, alerts & auditor decisions
 ├── requirements.txt                  # Complete project Python dependencies
 └── .gitignore                        # Git ignore rules (excludes caches & local data)
 ```
@@ -70,7 +68,7 @@ Contains the machine learning and graph neural network models:
 - **`01_preprocessing.ipynb`**: Converts raw multi-currency transactions to standardized USD amounts and formats.
 - **`02_feature_engineering.ipynb`**: Extracts graph topology features (fan-in/fan-out degrees, length-constrained cycle participation, temporal burst metrics).
 - **`03_modelling_and_tuning.ipynb`**: Trains a LightGBM classifier optimizing Precision-Recall AUC under severe class imbalance (~1:1000).
-- **`aml_lightgbm_model.pkl` / `.txt`**: Trained LightGBM model artifacts.
+- **`aml_lightgbm_model.pkl` / `.txt`**: Trained LightGBM model artifacts deployed in the real-time ensemble inference pipeline.
 - **`utils.py`**: Utility methods for memory reduction and batch transformation.
 - **`assets/`**: Visualizations of money laundering motifs and PR curves.
 
@@ -81,13 +79,12 @@ Contains the machine learning and graph neural network models:
 | File | Description |
 | :--- | :--- |
 | **`app.py`** | Modern 3-panel **Streamlit** dashboard. Features live automated stream playback (`▶️ Stream Data`), manual stepping (`▶ Step +1`, `⏩ Step +10`), top streaming counter banner, active fan-out investigation alerts, routing flow tables, and bank auditor approval workflows. |
-| **`fraud_data.py`** | The core **`RealTimeStreamingEngine`** singleton. Maintains an in-memory `nx.MultiDiGraph`, tracks customer profiles (volume, mean, max, unique peers), scales 13 node and 20 edge features, and runs GAT model forward passes. |
+| **`fraud_data.py`** | The core **`RealTimeStreamingEngine`** singleton. Maintains an in-memory `nx.MultiDiGraph`, tracks customer profiles (volume, mean, max, unique peers), scales 13 node and 20 edge features, and runs **GAT + LightGBM** ensemble forward passes. |
 | **`graph_vis.py`** | **Plotly** graph visualization module. Renders star-topology transaction graphs (central Sender star ★, Hop-1 Receiver circles ●, amount badges, and rich tooltips). |
 | **`stream_engine.py`** | Command-line script to test real-time streaming, console logging of GAT inferences, and fan-out detection without launching the UI. |
 | **`backend_api.py`** | API service layer providing endpoints for model inference, transaction submission, auditor approvals, and health checks. |
-| **`verify.py`** | Quick diagnostic script to check PyTorch, CUDA, PyG dependencies, and model weight loading. |
-| **`generate.py` / `.ipynb`** | Scripts for generating synthetic transaction streams and testing edge scenarios. |
-| **`live_stream_state.json`** | JSON checkpoint file preserving stream position, active alert counts, and timestamps across application restarts. |
+| **`verify.py`** | Comprehensive in-memory verification test suite validating GAT PyG weights, LightGBM model, fan-out pattern recognition, and state persistence. |
+| **`live_stream_state.json`** | JSON checkpoint file preserving stream position, active alert counts, timestamps, and auditor decisions across application restarts. |
 
 ---
 

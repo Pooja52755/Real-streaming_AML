@@ -571,8 +571,8 @@ if page == "Dashboard":
             for e in curr_tx.get("explanations", []):
                 if "payment format" in e.lower() or "currency:" in e.lower():
                     continue
-                if "risk probability" in e.lower() or "gat graph" in e.lower():
-                    exps_clean.append(f"GAT Neural Network Fraud Signal: {risk.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
+                if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
+                    exps_clean.append(f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
                 else:
                     exps_clean.append(e)
             exps_html = "".join([f"<li>{e}</li>" for e in exps_clean])
@@ -589,10 +589,10 @@ if page == "Dashboard":
                     {exps_html}
                 </ul>
                 <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #fde68a;padding-top:8px;">
-                    Model: <b>{curr_tx.get('model_used', 'GAT AML Model (PyG)')}</b> &nbsp;|&nbsp;
+                    Model: <b>{curr_tx.get('model_used', 'GAT (PyG) + LightGBM Ensemble')}</b> &nbsp;|&nbsp;
                     Confidence: <b>{curr_tx.get('model_confidence', f'{risk_score}%')}</b> &nbsp;|&nbsp;
                     Risk Score: <b style="color:{risk_col};">{risk_score}/100</b> &nbsp;|&nbsp;
-                    GAT Status: <b style="color:{risk_col};">{risk.upper()} RISK ALERT</b>
+                    Status: <b style="color:{risk_col};">{risk.upper()} RISK ALERT</b>
                 </div>
             </div>
             """))
@@ -836,7 +836,7 @@ elif page == "Graph Network":
             </div>
             <div>
                 <div style="font-size:11px;color:#64748b;font-weight:600;">MODEL</div>
-                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('model_used', 'GAT AML Model')}</div>
+                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('model_used', 'GAT (PyG) + LightGBM Ensemble')}</div>
             </div>
             <div>
                 <div style="font-size:11px;color:#64748b;font-weight:600;">SENDER</div>
@@ -876,8 +876,8 @@ elif page == "Graph Network":
         for e in tx_info.get("explanations", []):
             if "payment format" in e.lower() or "currency:" in e.lower():
                 continue
-            if "risk probability" in e.lower() or "gat graph" in e.lower():
-                tx_clean_exps.append(f"GAT Neural Network Fraud Signal: {tx_risk.upper()} ({tx_score}% Confidence · Risk Score: {tx_score}/100)")
+            if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
+                tx_clean_exps.append(f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {tx_risk.upper()} ({tx_score}% Confidence · Risk Score: {tx_score}/100)")
             else:
                 tx_clean_exps.append(e)
 
