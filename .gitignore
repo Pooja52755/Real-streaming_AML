@@ -5,6 +5,13 @@ __pycache__/
 *.so
 .Python
 
+# PyTorch & ML Model Checkpoints (Loaded dynamically from Hugging Face)
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.pkl
+
 # Environments
 .venv/
 venv/
@@ -13,6 +20,14 @@ ENV/
 env.bak/
 venv.bak/
 
+# Secrets & Environment Variables
+.env
+.env.*
+
+# Hugging Face Cache Directories
+.cache/
+hub/
+
 # IDE & Editor files
 .idea/
 .vscode/
@@ -20,11 +35,16 @@ venv.bak/
 *.swo
 .gemini/
 
-# Logs & Temporary files
+# Logs & Temporary test files
 *.log
 *.tmp
 scratch/
 .pytest_cache/
+audit_xai_*.py
+gat_prediction_proof.txt
+
+# Local Runtime Streaming State
+live_stream_state.json
 
 # OS generated files
 .DS_Store
