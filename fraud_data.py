@@ -22,9 +22,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
 from sklearn.preprocessing import StandardScaler
+from huggingface_hub import hf_hub_download
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "Data")
+HF_REPO_ID = "Pooja52755/gat-aml-fraud-detector"
+HF_MODEL_FILENAME = "gat_aml_stage1.pt"
 GAT_CKPT_PATH = os.path.join(BASE_DIR, "backend", "GAT", "gat_aml_stage1.pt")
 STATE_JSON_PATH = os.path.join(BASE_DIR, "live_stream_state.json")
 
@@ -185,18 +188,45 @@ class RealTimeStreamingEngine:
         self._load_state_from_disk()
 
     def _load_model(self):
-        if os.path.exists(GAT_CKPT_PATH):
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        checkpoint_path = None
+        try:
+            checkpoint_path = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=HF_MODEL_FILENAME,
+                token=token
+            )
+            print("MODEL_SOURCE: Hugging Face")
+            print(f"MODEL_REPO: {HF_REPO_ID}")
+            print(f"MODEL_FILE: {HF_MODEL_FILENAME}")
+        except Exception as hf_err:
+            if os.path.exists(GAT_CKPT_PATH):
+                checkpoint_path = GAT_CKPT_PATH
+                print(f"Warning: Hugging Face download failed ({hf_err}), loaded from local fallback: {checkpoint_path}")
+                print("MODEL_SOURCE: Local Fallback")
+                print(f"MODEL_FILE: {checkpoint_path}")
+            else:
+                print("MODEL_SOURCE: Hugging Face")
+                print(f"MODEL_REPO: {HF_REPO_ID}")
+                print(f"MODEL_FILE: {HF_MODEL_FILENAME}")
+                print("MODEL_LOADED: False")
+                raise RuntimeError(f"Failed to download GAT model from Hugging Face ({HF_REPO_ID}/{HF_MODEL_FILENAME}) and no local checkpoint found: {hf_err}")
+
+        if checkpoint_path and os.path.exists(checkpoint_path):
             try:
-                ckpt = torch.load(GAT_CKPT_PATH, map_location=self.device)
+                ckpt = torch.load(checkpoint_path, map_location=self.device)
                 config = ckpt.get("model_config", {"node_in_dim": 13, "edge_in_dim": 20, "hidden_dim": 64, "heads": 4, "dropout": 0.2})
                 self.model = GATAMLModel(**config).to(self.device)
                 self.model.load_state_dict(ckpt["model_state"])
                 self.model.eval()
-                print("GAT AML Model loaded from checkpoint.")
+                print("MODEL_LOADED: True")
+                print(f"GAT AML Model loaded from checkpoint: {checkpoint_path}")
             except Exception as e:
-                print(f"Error loading GAT model: {e}")
+                print("MODEL_LOADED: False")
+                raise RuntimeError(f"Error loading GAT model checkpoint from {checkpoint_path}: {e}")
         else:
-            print(f"Warning: GAT checkpoint not found at {GAT_CKPT_PATH}")
+            print("MODEL_LOADED: False")
+            raise RuntimeError(f"GAT checkpoint not found at {checkpoint_path}")
 
     def _load_state_from_disk(self):
         if os.path.exists(STATE_JSON_PATH):
@@ -384,7 +414,7 @@ class RealTimeStreamingEngine:
         ], dtype=np.float32)
 
     def _compute_gat_xai_attributions(self, x_tensor, msg_edge_index, msg_edge_attr, target_edge_index, target_edge_attr) -> List[str]:
-        """Option 1: Gradient x Input attribution (Integrated Gradients linear approximation) for real-time GNN explanations."""
+        """Gradient x Input attribution (Integrated Gradients linear approximation) for real-time GNN explanations."""
         if self.model is None:
             return []
         try:
@@ -530,12 +560,7 @@ class RealTimeStreamingEngine:
             risk_tier = "MODEL_OFFLINE"
             risk_score = 0
             is_fanout = False
-            gat_calibrated = 0
-            prediction_source = "FALLBACK"
-            model_used = "NONE (Checkpoint Missing)"
         else:
-            prediction_source = "GAT"
-            model_used = "backend/GAT/gat_aml_stage1.pt"
             # 1. Extract 1-hop dynamic ego subgraph around sender and receiver from the graph accumulated so far
             neighbor_nodes = set([from_acc, to_acc])
             if self.G.has_node(from_acc):
@@ -619,17 +644,6 @@ class RealTimeStreamingEngine:
                     risk_tier = "Low"
                     risk_score = min(35, gat_calibrated)
 
-        # Mandatory Instrumentation Output
-        print("[PREDICTION_INSTRUMENTATION]")
-        print(f"MODEL_USED: {model_used}")
-        print(f"GAT_RAW_LOGIT: {raw_logit}")
-        print(f"GAT_PROB: {gat_prob}")
-        print(f"CALIBRATED_SCORE: {gat_calibrated}")
-        print(f"FINAL_SCORE: {risk_score}")
-        print(f"FINAL_TIER: {risk_tier}")
-        print(f"FINAL_IS_FANOUT: {is_fanout}")
-        print(f"PREDICTION_SOURCE: {prediction_source}")
-
         tx_record = {
             "tx_id": tx_id,
             "timestamp": str(ts),
@@ -641,15 +655,12 @@ class RealTimeStreamingEngine:
             "payment_format": pay_fmt,
             "gat_raw_logit": raw_logit,
             "gat_prob": gat_prob,
-            "calibrated_score": gat_calibrated,
             "risk_tier": risk_tier,
             "risk_score": risk_score,
             "is_fanout": is_fanout,
             "is_laundering": is_laundering,
             "sender_out_degree": curr_out_cnt,
             "sender_unique_receivers": curr_unique_recv,
-            "prediction_source": prediction_source,
-            "model_used": model_used,
         }
         self.processed_txs.append(tx_record)
 
