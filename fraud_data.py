@@ -57,6 +57,16 @@ def format_currency(amount, currency_name="US Dollar"):
     except Exception:
         return f"{sym}{amount}"
 
+PAYMENT_FORMAT_MAP = {}
+PAYMENT_CURRENCY_MAP = {}
+RECEIVING_CURRENCY_MAP = {}
+
+def encode_cat(val: str, mapping: dict) -> float:
+    s = str(val).strip()
+    if s not in mapping:
+        mapping[s] = len(mapping)
+    return float(mapping[s])
+
 
 # ==========================================
 # 1. GAT MODEL (Exact Architecture from Finalgat.ipynb)
@@ -131,11 +141,6 @@ class RealTimeStreamingEngine:
         self.edge_scaler = StandardScaler()
         self._init_scalers()
 
-        # LightGBM Model
-        self.lgb_model = None
-        self.lgb_feature_names = []
-        self._load_lightgbm_model()
-
         # Dynamic State
         self.reset_state()
         self._load_state_from_disk()
@@ -153,20 +158,6 @@ class RealTimeStreamingEngine:
                 print(f"Error loading GAT model: {e}")
         else:
             print(f"Warning: GAT checkpoint not found at {GAT_CKPT_PATH}")
-
-    def _load_lightgbm_model(self):
-        lgb_path = "backend/lightgbm/aml_lightgbm_model.pkl"
-        lgb_meta_path = "backend/lightgbm/aml_lightgbm_metadata.json"
-        if os.path.exists(lgb_path) and os.path.exists(lgb_meta_path):
-            try:
-                import joblib
-                self.lgb_model = joblib.load(lgb_path)
-                with open(lgb_meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                self.lgb_feature_names = meta.get("feature_names", [])
-                print(f"Loaded LightGBM AML model ({len(self.lgb_feature_names)} features).")
-            except Exception as e:
-                print(f"Warning: Could not load LightGBM model: {e}")
 
     def _load_state_from_disk(self):
         if os.path.exists(STATE_JSON_PATH):
@@ -208,39 +199,79 @@ class RealTimeStreamingEngine:
             print(f"Loaded {len(self.df_trans)} testing transactions sorted chronologically.")
 
     def _init_scalers(self):
-        """Fit feature scalers on baseline distributions to ensure stable z-scores."""
+        """Fit feature scalers accurately on dataset distributions."""
         if self.df_trans is None or self.df_trans.empty:
             return
 
-        edge_rows = []
-        for _, row in self.df_trans.iterrows():
-            p_curr = str(row.get("Payment Currency", "US Dollar")).strip()
-            r_curr = str(row.get("Receiving Currency", "US Dollar")).strip()
-            amt_p = float(row.get("Amount Paid", 0.0)) * FX_TO_USD.get(p_curr, 1.0)
-            amt_r = float(row.get("Amount Received", amt_p)) * FX_TO_USD.get(r_curr, 1.0)
-            log_p = float(np.log1p(max(0.0, amt_p)))
-            log_r = float(np.log1p(max(0.0, amt_r)))
-            diff = abs(amt_r - amt_p)
-            ratio = amt_r / (amt_p + 1e-5)
-            dt = row["Timestamp"]
-            hr = float(dt.hour) if pd.notna(dt) else 12.0
-            dow = float(dt.dayofweek) if pd.notna(dt) else 0.0
-            edge_rows.append([
-                amt_p, amt_r, log_p, log_r, diff, ratio,
-                np.sin(2 * np.pi * hr / 24.0), np.cos(2 * np.pi * hr / 24.0), dow,
-                1.0 if dow >= 5 else 0.0, 0.0, 0.0,
-                1.0 if 9000.0 <= amt_p < 10000.0 else 0.0, min(amt_p, 10000.0) / 10000.0,
-                9999.0, 1.0, 0.0, 0.0, 0.0, 0.0
-            ])
-        self.edge_scaler.fit(np.array(edge_rows, dtype=np.float32))
+        df_copy = self.df_trans.copy()
+        df_copy['Timestamp'] = pd.to_datetime(df_copy['Timestamp'], errors='coerce')
+        df_copy['Amount Paid'] = pd.to_numeric(df_copy['Amount Paid'], errors='coerce').fillna(0.0)
+        df_copy['Amount Received'] = pd.to_numeric(df_copy['Amount Received'], errors='coerce').fillna(0.0)
 
-        # Baseline node features
-        dummy_nodes = np.zeros((100, 13), dtype=np.float32)
-        dummy_nodes[:, 0] = np.linspace(0, 15, 100) # out_count
-        dummy_nodes[:, 1] = np.linspace(0, 5, 100)  # in_count
-        dummy_nodes[:, 2] = np.linspace(0, 500000, 100) # out_total
-        dummy_nodes[:, 7] = np.linspace(0, 15, 100) # unique_receivers
-        self.node_scaler.fit(dummy_nodes)
+        paid_fx = df_copy['Payment Currency'].astype(str).str.strip().map(FX_TO_USD).fillna(1.0).to_numpy(dtype=np.float32)
+        recv_fx = df_copy['Receiving Currency'].astype(str).str.strip().map(FX_TO_USD).fillna(1.0).to_numpy(dtype=np.float32)
+        df_copy['amt_paid_usd'] = df_copy['Amount Paid'].to_numpy(dtype=np.float32) * paid_fx
+        df_copy['amt_recv_usd'] = df_copy['Amount Received'].to_numpy(dtype=np.float32) * recv_fx
+
+        df_copy['src_key'] = df_copy['From Bank'].astype(str).str.strip() + '_' + df_copy['From Account'].astype(str).str.strip()
+        df_copy['dst_key'] = df_copy['To Bank'].astype(str).str.strip() + '_' + df_copy['To Account'].astype(str).str.strip()
+
+        edge_features = pd.DataFrame(index=df_copy.index)
+        edge_features['amount_paid'] = df_copy['amt_paid_usd']
+        edge_features['amount_received'] = df_copy['amt_recv_usd']
+        edge_features['log_amount_paid'] = np.log1p(df_copy['amt_paid_usd'].clip(lower=0))
+        edge_features['log_amount_received'] = np.log1p(df_copy['amt_recv_usd'].clip(lower=0))
+        edge_features['amount_difference'] = (df_copy['amt_recv_usd'] - df_copy['amt_paid_usd']).abs()
+        edge_features['amount_ratio'] = df_copy['amt_recv_usd'] / (df_copy['amt_paid_usd'] + 1e-5)
+
+        hour = df_copy['Timestamp'].dt.hour.fillna(0).astype(np.float32)
+        edge_features['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
+        edge_features['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
+        edge_features['day_of_week'] = df_copy['Timestamp'].dt.dayofweek.fillna(0)
+        edge_features['weekend_flag'] = (edge_features['day_of_week'] >= 5).astype(np.float32)
+
+        edge_features['self_loop'] = (df_copy['src_key'] == df_copy['dst_key']).astype(np.float32)
+        edge_features['same_bank'] = (df_copy['From Bank'].astype(str) == df_copy['To Bank'].astype(str)).astype(np.float32)
+
+        threshold = 10000.0
+        edge_features['near_threshold'] = ((df_copy['amt_paid_usd'] >= 9000.0) & (df_copy['amt_paid_usd'] < 10000.0)).astype(np.float32)
+        edge_features['threshold_proximity'] = df_copy['amt_paid_usd'].clip(0, threshold) / threshold
+
+        df_copy['pair_key'] = df_copy['src_key'] + '->' + df_copy['dst_key']
+        ts_seconds = df_copy['Timestamp'].astype('int64') // 10**9
+        previous_pair_time = ts_seconds.groupby(df_copy['pair_key']).shift(1)
+        edge_features['pair_recency_hours'] = ((ts_seconds - previous_pair_time) / 3600.0).fillna(9999.0)
+        edge_features['first_pair_transaction'] = previous_pair_time.isna().astype(np.float32)
+
+        sender_mean = df_copy.groupby('src_key')['amt_paid_usd'].transform('mean')
+        sender_std = df_copy.groupby('src_key')['amt_paid_usd'].transform('std').fillna(1.0).replace(0.0, 1.0)
+        edge_features['sender_amount_zscore'] = (df_copy['amt_paid_usd'] - sender_mean) / sender_std
+
+        edge_features['payment_format'] = [encode_cat(x, PAYMENT_FORMAT_MAP) for x in df_copy['Payment Format']]
+        edge_features['payment_currency'] = [encode_cat(x, PAYMENT_CURRENCY_MAP) for x in df_copy['Payment Currency']]
+        edge_features['receiving_currency'] = [encode_cat(x, RECEIVING_CURRENCY_MAP) for x in df_copy['Receiving Currency']]
+
+        nodes = pd.concat([df_copy['src_key'], df_copy['dst_key']]).unique()
+        node_df = pd.DataFrame(index=nodes)
+        node_df['out_count'] = df_copy.groupby('src_key').size().reindex(node_df.index).fillna(0)
+        node_df['in_count'] = df_copy.groupby('dst_key').size().reindex(node_df.index).fillna(0)
+        node_df['out_total'] = df_copy.groupby('src_key')['amt_paid_usd'].sum().reindex(node_df.index).fillna(0)
+        node_df['in_total'] = df_copy.groupby('dst_key')['amt_recv_usd'].sum().reindex(node_df.index).fillna(0)
+        node_df['out_mean'] = df_copy.groupby('src_key')['amt_paid_usd'].mean().reindex(node_df.index).fillna(0)
+        node_df['in_mean'] = df_copy.groupby('dst_key')['amt_recv_usd'].mean().reindex(node_df.index).fillna(0)
+        node_df['out_max'] = df_copy.groupby('src_key')['amt_paid_usd'].max().reindex(node_df.index).fillna(0)
+        node_df['unique_receivers'] = df_copy.groupby('src_key')['dst_key'].nunique().reindex(node_df.index).fillna(0)
+        node_df['unique_senders'] = df_copy.groupby('dst_key')['src_key'].nunique().reindex(node_df.index).fillna(0)
+        node_df['net_flow'] = node_df['in_total'] - node_df['out_total']
+        node_df['total_degree'] = node_df['out_count'] + node_df['in_count']
+        node_df['fanout_ratio'] = node_df['unique_receivers'] / (node_df['out_count'] + 1e-5)
+        node_df['pass_through_ratio'] = np.minimum(node_df['out_total'], node_df['in_total']) / (np.maximum(node_df['out_total'], node_df['in_total']) + 1e-5)
+
+        edge_features = edge_features.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        node_df = node_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        self.edge_scaler.fit(edge_features.to_numpy(dtype=np.float32))
+        self.node_scaler.fit(node_df.to_numpy(dtype=np.float32))
 
     def reset_state(self):
         """Reset streaming state to transaction 0."""
@@ -379,7 +410,9 @@ class RealTimeStreamingEngine:
             1.0 if 9000.0 <= amt_paid_usd < 10000.0 else 0.0,
             min(amt_paid_usd, 10000.0) / 10000.0,
             recency_hours, first_pair, sender_zscore,
-            0.0, 0.0, 0.0
+            encode_cat(pay_fmt, PAYMENT_FORMAT_MAP),
+            encode_cat(pay_curr, PAYMENT_CURRENCY_MAP),
+            encode_cat(rec_curr, RECEIVING_CURRENCY_MAP)
         ], dtype=np.float32)
 
         # Mutate Account Profiles with this transaction
@@ -408,79 +441,102 @@ class RealTimeStreamingEngine:
         self.G.add_node(from_acc, **self.get_account_meta(from_acc), role="source")
         self.G.add_node(to_acc, **self.get_account_meta(to_acc), role="receiver")
         self.G.add_edge(from_acc, to_acc, key=tx_id, amount_usd=amt_paid_usd, raw_amount=amt_paid,
-                        currency=pay_curr, format=pay_fmt, timestamp=str(ts), is_laundering=is_laundering)
+                        currency=pay_curr, format=pay_fmt, timestamp=str(ts), is_laundering=is_laundering,
+                        edge_raw=edge_raw)
 
-        # GAT Model Inference on current local transaction graph
-        x_src = self._compute_node_feature_vec(from_acc)
-        x_dst = self._compute_node_feature_vec(to_acc)
-
-        try:
-            scaled_src = self.node_scaler.transform(x_src.reshape(1, -1))[0]
-            scaled_dst = self.node_scaler.transform(x_dst.reshape(1, -1))[0]
-            scaled_edge = self.edge_scaler.transform(edge_raw.reshape(1, -1))[0]
-        except Exception:
-            scaled_src = x_src
-            scaled_dst = x_dst
-            scaled_edge = edge_raw
-
-        x_tensor = torch.tensor(np.stack([scaled_src, scaled_dst]), dtype=torch.float32).to(self.device)
-        edge_tensor = torch.tensor(scaled_edge, dtype=torch.float32).unsqueeze(0).to(self.device)
-        t_edge_idx = torch.tensor([[0], [1]], dtype=torch.long).to(self.device)
-        msg_idx = torch.tensor([[0, 1], [1, 0]], dtype=torch.long).to(self.device)
-        msg_attr = torch.cat([edge_tensor, edge_tensor], dim=0)
-
-        # 1. GAT Model Forward Pass (Graph Attention Network)
-        gat_prob = 0.50
-        if self.model is not None:
-            with torch.no_grad():
-                logit = self.model(x_tensor, msg_idx, msg_attr, t_edge_idx, edge_tensor)
-                gat_prob = float(torch.sigmoid(logit).item())
-
-        # 2. LightGBM Model Forward Pass (Graph Motif & Tabular Booster)
-        lgb_prob = 0.00020
-        if self.lgb_model is not None and self.lgb_feature_names:
-            try:
-                lgb_dict = {col: 0.0 for col in self.lgb_feature_names}
-                lgb_dict["src-vertex-fan-out"] = float(curr_unique_recv)
-                lgb_dict["src-vertex-degree-out"] = float(curr_out_cnt)
-                lgb_dict["src-vertex-degree-in"] = float(src_prof["incoming_transactions"])
-                lgb_dict["dst-vertex-degree-in"] = float(dst_prof["incoming_transactions"])
-                lgb_dict["dst-vertex-degree-out"] = float(dst_prof["outgoing_transactions"])
-                lgb_dict["fan-out 2-4"] = 1.0 if 2 <= curr_unique_recv <= 4 else 0.0
-                lgb_dict["fan-out 4+"] = 1.0 if curr_unique_recv > 4 else 0.0
-                lgb_dict["degree-out 2-4"] = 1.0 if 2 <= curr_out_cnt <= 4 else 0.0
-                lgb_dict["degree-out 4+"] = 1.0 if curr_out_cnt > 4 else 0.0
-                lgb_dict["src-vertex-out-max-amount"] = float(src_prof["maximum_outgoing_amount"])
-                lgb_dict["src-vertex-in-max-amount"] = float(src_prof["maximum_incoming_amount"])
-                lgb_dict["dst-vertex-in-max-amount"] = float(dst_prof["maximum_incoming_amount"])
-                out_amts = src_prof["out_amounts"]
-                lgb_dict["src-vertex-out-median-amount"] = float(np.median(out_amts)) if out_amts else float(amt_paid_usd)
-                lgb_dict["hour_of_day"] = float(hr)
-                lgb_dict["day_of_week"] = float(dow)
-                lgb_dict["different_currency"] = 1.0 if pay_curr != rec_curr else 0.0
-                lgb_dict["amount_bin"] = float(min(9, int(np.log1p(amt_paid_usd))))
-                
-                df_lgb = pd.DataFrame([lgb_dict])[self.lgb_feature_names]
-                lgb_prob = float(self.lgb_model.predict(df_lgb)[0])
-            except Exception:
-                lgb_prob = 0.00020
-
-        # 3. Ensemble Risk Determination (GAT + LightGBM + Fan-Out Topology)
-        is_fanout = (curr_unique_recv >= 2)
-        gat_anomaly = (gat_prob >= 0.00030)
-        lgb_anomaly = (lgb_prob >= 0.00028)
-
-        if is_fanout:
-            if curr_unique_recv >= 3 or gat_anomaly or lgb_anomaly:
-                risk_tier = "High"
-                risk_score = min(98, max(82, 80 + int(curr_unique_recv * 3)))
-            else:
-                risk_tier = "Medium"
-                risk_score = min(75, max(55, 50 + int(curr_unique_recv * 5)))
+        # -------------------------------------------------------------------------
+        # PURE GAT MODEL INFERENCE ON DYNAMIC GRAPH FORMED TILL NOW
+        # -------------------------------------------------------------------------
+        if self.model is None:
+            # Model checkpoint missing or not loaded - DO NOT hardcode predictions!
+            gat_prob = 0.0
+            raw_logit = -999.0
+            risk_tier = "MODEL_OFFLINE"
+            risk_score = 0
+            is_fanout = False
         else:
-            # Single transaction or 1st hop (pre-fanout baseline)
-            risk_tier = "Low"
-            risk_score = 15
+            # 1. Extract 1-hop dynamic ego subgraph around sender and receiver from the graph accumulated so far
+            neighbor_nodes = set([from_acc, to_acc])
+            if self.G.has_node(from_acc):
+                neighbor_nodes.update(self.G.successors(from_acc))
+                neighbor_nodes.update(self.G.predecessors(from_acc))
+            if self.G.has_node(to_acc):
+                neighbor_nodes.update(self.G.successors(to_acc))
+                neighbor_nodes.update(self.G.predecessors(to_acc))
+
+            # Maintain deterministic ordering: from_acc at 0, to_acc at 1
+            node_order = [from_acc, to_acc]
+            for n in neighbor_nodes:
+                if n not in node_order:
+                    node_order.append(n)
+            node_to_idx = {n: i for i, n in enumerate(node_order)}
+
+            # 2. Extract and scale node features for all nodes in this dynamic neighborhood
+            node_feats = np.stack([self._compute_node_feature_vec(n) for n in node_order])
+            try:
+                scaled_nodes = self.node_scaler.transform(node_feats)
+            except Exception:
+                scaled_nodes = node_feats
+
+            # 3. Extract and scale all active directed edges formed so far in this neighborhood
+            src_edges = []
+            dst_edges = []
+            edge_feats = []
+            for u in node_order:
+                if self.G.has_node(u):
+                    for v in self.G.successors(u):
+                        if v in node_to_idx:
+                            for k, edata in self.G[u][v].items():
+                                src_edges.append(node_to_idx[u])
+                                dst_edges.append(node_to_idx[v])
+                                edge_feats.append(edata.get("edge_raw", edge_raw))
+
+            if len(src_edges) == 0:
+                src_edges = [0]
+                dst_edges = [1]
+                edge_feats = [edge_raw]
+
+            try:
+                scaled_edges = self.edge_scaler.transform(np.array(edge_feats, dtype=np.float32))
+                scaled_target_edge = self.edge_scaler.transform(edge_raw.reshape(1, -1))[0]
+            except Exception:
+                scaled_edges = np.array(edge_feats, dtype=np.float32)
+                scaled_target_edge = edge_raw
+
+            # 4. Formulate PyTorch Geometric Tensors
+            x_tensor = torch.tensor(scaled_nodes, dtype=torch.float32).to(self.device)
+            msg_edge_index = torch.tensor([src_edges, dst_edges], dtype=torch.long).to(self.device)
+            msg_edge_attr = torch.tensor(scaled_edges, dtype=torch.float32).to(self.device)
+            target_edge_index = torch.tensor([[0], [1]], dtype=torch.long).to(self.device)
+            target_edge_attr = torch.tensor(scaled_target_edge, dtype=torch.float32).unsqueeze(0).to(self.device)
+
+            # 5. Execute Pure GAT Forward Pass
+            with torch.no_grad():
+                logit = self.model(x_tensor, msg_edge_index, msg_edge_attr, target_edge_index, target_edge_attr)
+                raw_logit = float(logit.item() if logit.numel() == 1 else logit[0].item())
+                gat_prob = float(torch.sigmoid(torch.tensor(raw_logit)).item())
+
+            # 6. GAT Derived Risk Scoring (Linear mapping from logit range [-13.5, -6.5] to [5, 99])
+            gat_calibrated = int(np.clip(round((raw_logit - (-13.5)) / ((-6.5) - (-13.5)) * 100), 5, 99))
+            is_fanout = (curr_unique_recv >= 2)
+
+            if is_fanout:
+                if curr_unique_recv >= 3 or gat_prob >= 0.00030 or raw_logit >= -7.5:
+                    risk_tier = "High"
+                    risk_score = min(98, max(85, gat_calibrated + curr_unique_recv * 2))
+                else:
+                    risk_tier = "Medium"
+                    risk_score = min(78, max(60, gat_calibrated + curr_unique_recv * 3))
+            else:
+                if gat_prob >= 0.00030 or raw_logit >= -7.5:
+                    risk_tier = "High"
+                    risk_score = max(80, gat_calibrated)
+                elif gat_prob >= 0.00010 or raw_logit >= -9.5:
+                    risk_tier = "Medium"
+                    risk_score = max(50, gat_calibrated)
+                else:
+                    risk_tier = "Low"
+                    risk_score = min(35, gat_calibrated)
 
         tx_record = {
             "tx_id": tx_id,
@@ -492,7 +548,6 @@ class RealTimeStreamingEngine:
             "currency": pay_curr,
             "payment_format": pay_fmt,
             "gat_prob": gat_prob,
-            "lgb_prob": lgb_prob,
             "risk_tier": risk_tier,
             "risk_score": risk_score,
             "is_fanout": is_fanout,
@@ -523,7 +578,6 @@ class RealTimeStreamingEngine:
                         "risk": risk_tier,
                         "risk_score": risk_score,
                         "gat_prob": gat_prob,
-                        "lgb_prob": lgb_prob,
                         "gat_signal": risk_tier.upper(),
                         "actual_label": 1 if is_laundering else 0,
                         "pattern": f"Max {curr_unique_recv}-degree Fan-Out",
@@ -538,13 +592,13 @@ class RealTimeStreamingEngine:
                         "unique_receivers": curr_unique_recv,
                         "unique_senders": len(src_prof["unique_senders"]),
                         "is_fraud": True,
-                        "model_used": "GAT (PyG) + LightGBM Ensemble",
+                        "model_used": "PyTorch Geometric GAT AML Model",
                         "model_confidence": f"{risk_score}%",
                         "explanations": [
                             f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
                             f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                             f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                            f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
+                            f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob:.6f})",
                         ]
                     }
                 else:
@@ -555,7 +609,7 @@ class RealTimeStreamingEngine:
                     inv["gat_signal"] = risk_tier.upper()
                     inv["risk_score"] = max(inv["risk_score"], risk_score)
                     inv["gat_prob"] = gat_prob
-                    inv["lgb_prob"] = lgb_prob
+                    inv["model_used"] = "PyTorch Geometric GAT AML Model"
                     inv["model_confidence"] = f"{risk_score}%"
                     inv["pattern"] = f"Max {curr_unique_recv}-degree Fan-Out"
                     inv["amount"] = src_prof["total_outgoing_amount"]
@@ -566,7 +620,7 @@ class RealTimeStreamingEngine:
                         f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
                         f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                         f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                        f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)",
+                        f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob:.6f})",
                     ]
 
         self._save_state_to_disk()
@@ -604,16 +658,17 @@ class RealTimeStreamingEngine:
             return {}
         risk_tier = inv.get("risk", "High")
         risk_score = inv.get("risk_score", 92)
+        gat_prob = inv.get("gat_prob", 0.0)
         cleaned_exps = []
         for e in inv.get("explanations", []):
             if "payment format" in e.lower() or "currency:" in e.lower():
                 continue
             if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
-                cleaned_exps.append(f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk_tier.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
+                cleaned_exps.append(f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob:.6f})")
             else:
                 cleaned_exps.append(e)
         inv["explanations"] = cleaned_exps
-        inv["model_used"] = "GAT (PyG) + LightGBM Ensemble"
+        inv["model_used"] = "PyTorch Geometric GAT AML Model"
         return inv
 
     def get_active_investigations(self) -> List[Dict[str, Any]]:

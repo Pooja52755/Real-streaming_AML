@@ -2,6 +2,6 @@
   "current_idx": 0,
   "total_txs": 100,
   "active_investigations_count": 0,
-  "last_processed_timestamp": null,
-  "auditor_decisions": {}
+  "auditor_decisions": {},
+  "last_updated": "2026-09-29T20:11:02.980224"
 }

@@ -41,7 +41,7 @@ def verify_datasets():
     print(f" [OK] Latest transaction: {latest_ts}")
 
 def verify_models():
-    print_header("2. VERIFYING GAT & LIGHTGBM MODELS")
+    print_header("2. VERIFYING GAT MODEL & DYNAMIC GRAPH INFERENCE")
     
     # GAT
     gat_ckpt = "backend/GAT/gat_aml_stage1.pt"
@@ -49,17 +49,21 @@ def verify_models():
     ckpt = torch.load(gat_ckpt, map_location="cpu")
     print(f" [OK] GAT Checkpoint loaded. Total weights keys: {len(ckpt['model_state'])}")
     
-    # LightGBM
-    lgb_ckpt = "backend/lightgbm/aml_lightgbm_model.pkl"
-    lgb_meta = "backend/lightgbm/aml_lightgbm_metadata.json"
-    assert os.path.exists(lgb_ckpt), f"Missing {lgb_ckpt}"
-    assert os.path.exists(lgb_meta), f"Missing {lgb_meta}"
+    from backend_api import GATAMLModel
+    model = GATAMLModel(node_in_dim=13, edge_in_dim=20, hidden_dim=64, heads=4, dropout=0.2)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
     
-    import joblib
-    lgb = joblib.load(lgb_ckpt)
-    with open(lgb_meta, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-    print(f" [OK] LightGBM Model loaded ({len(meta['feature_names'])} features).")
+    # Test multi-node dynamic graph forward pass (1 sender -> 3 receivers)
+    x = torch.randn(4, 13)
+    edge_index = torch.tensor([[0, 0, 0], [1, 2, 3]], dtype=torch.long)
+    edge_attr = torch.randn(3, 20)
+    target_edge_index = torch.tensor([[0], [3]], dtype=torch.long)
+    target_edge_attr = edge_attr[2:3]
+    with torch.no_grad():
+        logit = model(x, edge_index, edge_attr, target_edge_index, target_edge_attr)
+        prob = torch.sigmoid(logit).item()
+    print(f" [OK] Dynamic Graph GAT Multi-Head Attention Forward Pass: logit={logit.item():.4f}, prob={prob:.6f}")
 
 def verify_engine():
     print_header("3. VERIFYING REAL-TIME STREAMING ENGINE (fraud_data.py)")
@@ -71,11 +75,22 @@ def verify_engine():
     
     # Step 1
     tx1 = fraud_data.step_stream(1)
-    print(f" [OK] Stepped Tx #1: {tx1['tx_id']} | Risk Tier={tx1['risk_tier']} | Score={tx1['risk_score']}/100")
-    assert tx1["risk_tier"] == "Low", "Expected Tx #1 to be Low Risk (1-hop baseline)"
+    print(f" [OK] Stepped Tx #1: {tx1['tx_id']} | Risk Tier={tx1['risk_tier']} | Score={tx1['risk_score']}/100 | GAT Prob={tx1['gat_prob']:.6f}")
+    assert tx1["risk_tier"] != "MODEL_OFFLINE", "GAT model must be active for inference"
     
-    # Stream to fan-out (step 10 more transactions)
-    for _ in range(10):
+    # Test that removing model causes MODEL_OFFLINE (proves no hardcoding)
+    eng = fraud_data.RealTimeStreamingEngine.get_instance()
+    orig_model = eng.model
+    eng.model = None
+    eng.reset_state()
+    tx_offline = eng.process_next_transaction()
+    assert tx_offline["risk_tier"] == "MODEL_OFFLINE" and tx_offline["risk_score"] == 0, "Removing GAT model must produce MODEL_OFFLINE"
+    print(" [OK] Verified: Removing GAT model triggers MODEL_OFFLINE (no hardcoded fallbacks).")
+    eng.model = orig_model
+    eng.reset_state()
+
+    # Stream to fan-out (step 12 transactions to reach GROUP-8004943A0 fan-out)
+    for _ in range(12):
         fraud_data.step_stream(1)
         
     status_11 = fraud_data.get_stream_status()

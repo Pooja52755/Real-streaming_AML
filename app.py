@@ -568,11 +568,12 @@ if page == "Dashboard":
             is_high = (risk == "High")
             xai_extra = "xai-box-high" if is_high else ""
             exps_clean = []
+            gat_prob_val = curr_tx.get("gat_prob", 0.0)
             for e in curr_tx.get("explanations", []):
                 if "payment format" in e.lower() or "currency:" in e.lower():
                     continue
                 if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
-                    exps_clean.append(f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {risk.upper()} ({risk_score}% Confidence · Risk Score: {risk_score}/100)")
+                    exps_clean.append(f"GAT Graph Attention Network (PyG): {risk.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob_val:.6f})")
                 else:
                     exps_clean.append(e)
             exps_html = "".join([f"<li>{e}</li>" for e in exps_clean])
@@ -589,7 +590,7 @@ if page == "Dashboard":
                     {exps_html}
                 </ul>
                 <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #fde68a;padding-top:8px;">
-                    Model: <b>{curr_tx.get('model_used', 'GAT (PyG) + LightGBM Ensemble')}</b> &nbsp;|&nbsp;
+                    Model: <b>{curr_tx.get('model_used', 'PyTorch Geometric GAT AML Model')}</b> &nbsp;|&nbsp;
                     Confidence: <b>{curr_tx.get('model_confidence', f'{risk_score}%')}</b> &nbsp;|&nbsp;
                     Risk Score: <b style="color:{risk_col};">{risk_score}/100</b> &nbsp;|&nbsp;
                     Status: <b style="color:{risk_col};">{risk.upper()} RISK ALERT</b>
@@ -836,7 +837,7 @@ elif page == "Graph Network":
             </div>
             <div>
                 <div style="font-size:11px;color:#64748b;font-weight:600;">MODEL</div>
-                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('model_used', 'GAT (PyG) + LightGBM Ensemble')}</div>
+                <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('model_used', 'PyTorch Geometric GAT AML Model')}</div>
             </div>
             <div>
                 <div style="font-size:11px;color:#64748b;font-weight:600;">SENDER</div>
