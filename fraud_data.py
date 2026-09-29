@@ -68,6 +68,45 @@ def encode_cat(val: str, mapping: dict) -> float:
     return float(mapping[s])
 
 
+NODE_FEATURE_NAMES = [
+    ("out_cnt", "Rapid Outbound Transaction Frequency"),
+    ("in_cnt", "Inbound Funding Count"),
+    ("out_tot", "Cumulative Outgoing Volume ($)"),
+    ("in_tot", "Cumulative Inbound Inflow ($)"),
+    ("out_mean", "Elevated Outbound Transfer Size"),
+    ("in_mean", "Average Inbound Transfer Size"),
+    ("out_max", "Peak Outbound Transfer Amount"),
+    ("unique_receivers", "Multi-Counterparty Fan-Out Dispersion"),
+    ("unique_senders", "Inbound Source Counterparties"),
+    ("net_flow", "Capital Drain / Liquidity Depletion"),
+    ("tot_degree", "Account Interaction Degree"),
+    ("fanout_ratio", "Fan-Out Divergence Ratio"),
+    ("pass_through", "Pass-Through Shell Account Velocity")
+]
+
+EDGE_FEATURE_NAMES = [
+    ("amt_paid", "High Single Transfer Value"),
+    ("amt_recv", "Received Transfer Value"),
+    ("log_paid", "Log-Scaled Capital Magnitude"),
+    ("log_recv", "Log-Scaled Received Capital"),
+    ("amt_diff", "Cross-Currency Conversion Discrepancy"),
+    ("amt_ratio", "Disproportionate Inflow-Outflow Ratio"),
+    ("sin_hour", "Circadian Transfer Timing (Sin)"),
+    ("cos_hour", "Circadian Transfer Timing (Cos)"),
+    ("dow", "Day-of-Week Pattern"),
+    ("is_weekend", "Weekend Out-of-Hours Transfer"),
+    ("self_loop", "Circular Self-Transfer Flag"),
+    ("same_bank", "Intra-Bank Movement"),
+    ("structuring", "AML Structuring Threshold ($9,000–$10,000)"),
+    ("norm_amt", "Amount Scaled to AML Limit"),
+    ("recency_hours", "Burst Velocity (< 1h Inter-Transaction Latency)"),
+    ("first_pair", "First-Time Counterparty Link"),
+    ("zscore", "Sender Historical Outlier (Z-Score)"),
+    ("pay_fmt", "Payment Channel Format (ACH/Wire)"),
+    ("pay_curr", "Payment Currency Format"),
+    ("rec_curr", "Receiving Currency Format")
+]
+
 # ==========================================
 # 1. GAT MODEL (Exact Architecture from Finalgat.ipynb)
 # ==========================================
@@ -344,6 +383,43 @@ class RealTimeStreamingEngine:
             u_recv, u_send, net_flow, tot_deg, fanout_ratio, pass_through
         ], dtype=np.float32)
 
+    def _compute_gat_xai_attributions(self, x_tensor, msg_edge_index, msg_edge_attr, target_edge_index, target_edge_attr) -> List[str]:
+        """Option 1: Gradient x Input attribution (Integrated Gradients linear approximation) for real-time GNN explanations."""
+        if self.model is None:
+            return []
+        try:
+            x_in = x_tensor.clone().detach().requires_grad_(True)
+            target_edge_in = target_edge_attr.clone().detach().requires_grad_(True)
+
+            out_logit = self.model(x_in, msg_edge_index, msg_edge_attr, target_edge_index, target_edge_in)
+            out_logit.backward()
+
+            if x_in.grad is None or target_edge_in.grad is None:
+                return []
+
+            node_attr = (x_in.grad[0] * x_in[0]).abs().detach().cpu().numpy()
+            edge_attr = (target_edge_in.grad[0] * target_edge_in[0]).abs().detach().cpu().numpy()
+
+            drivers = []
+            for (feat_key, label), val in zip(NODE_FEATURE_NAMES, node_attr):
+                if val > 1e-4:
+                    drivers.append((label, float(val)))
+            for (feat_key, label), val in zip(EDGE_FEATURE_NAMES, edge_attr):
+                if val > 1e-4:
+                    drivers.append((label, float(val)))
+
+            drivers.sort(key=lambda x: x[1], reverse=True)
+            top = drivers[:3]
+            tot = sum([d[1] for d in top]) + 1e-6
+
+            exps = []
+            for label, val in top:
+                pct = (val / tot) * 100.0
+                exps.append(f"XAI Risk Factor: {label} (+{pct:.1f}% relative GAT attribution)")
+            return exps
+        except Exception:
+            return []
+
     def process_next_transaction(self) -> Optional[Dict[str, Any]]:
         """Processes the next transaction chronologically from testing_trans.csv."""
         if self.df_trans is None or self.current_idx >= len(self.df_trans):
@@ -454,7 +530,12 @@ class RealTimeStreamingEngine:
             risk_tier = "MODEL_OFFLINE"
             risk_score = 0
             is_fanout = False
+            gat_calibrated = 0
+            prediction_source = "FALLBACK"
+            model_used = "NONE (Checkpoint Missing)"
         else:
+            prediction_source = "GAT"
+            model_used = "backend/GAT/gat_aml_stage1.pt"
             # 1. Extract 1-hop dynamic ego subgraph around sender and receiver from the graph accumulated so far
             neighbor_nodes = set([from_acc, to_acc])
             if self.G.has_node(from_acc):
@@ -538,6 +619,17 @@ class RealTimeStreamingEngine:
                     risk_tier = "Low"
                     risk_score = min(35, gat_calibrated)
 
+        # Mandatory Instrumentation Output
+        print("[PREDICTION_INSTRUMENTATION]")
+        print(f"MODEL_USED: {model_used}")
+        print(f"GAT_RAW_LOGIT: {raw_logit}")
+        print(f"GAT_PROB: {gat_prob}")
+        print(f"CALIBRATED_SCORE: {gat_calibrated}")
+        print(f"FINAL_SCORE: {risk_score}")
+        print(f"FINAL_TIER: {risk_tier}")
+        print(f"FINAL_IS_FANOUT: {is_fanout}")
+        print(f"PREDICTION_SOURCE: {prediction_source}")
+
         tx_record = {
             "tx_id": tx_id,
             "timestamp": str(ts),
@@ -547,15 +639,26 @@ class RealTimeStreamingEngine:
             "amount_formatted": format_currency(amt_paid, pay_curr),
             "currency": pay_curr,
             "payment_format": pay_fmt,
+            "gat_raw_logit": raw_logit,
             "gat_prob": gat_prob,
+            "calibrated_score": gat_calibrated,
             "risk_tier": risk_tier,
             "risk_score": risk_score,
             "is_fanout": is_fanout,
             "is_laundering": is_laundering,
             "sender_out_degree": curr_out_cnt,
             "sender_unique_receivers": curr_unique_recv,
+            "prediction_source": prediction_source,
+            "model_used": model_used,
         }
         self.processed_txs.append(tx_record)
+
+        # Compute Dynamic GAT XAI Attributions for Flagged Transactions
+        xai_drivers = []
+        if self.model is not None and (risk_tier in ["High", "Medium"] or is_fanout):
+            xai_drivers = self._compute_gat_xai_attributions(
+                x_tensor, msg_edge_index, msg_edge_attr, target_edge_index, target_edge_attr
+            )
 
         # Update or Create Active Investigation if Medium or High risk
         if risk_tier in ["High", "Medium"] and is_fanout:
@@ -565,6 +668,13 @@ class RealTimeStreamingEngine:
                 pass
             else:
                 src_meta = self.get_account_meta(from_acc)
+                base_exps = [
+                    f"Fan-Out pattern detected: 1 sender ({from_acc}) -> {curr_unique_recv} unique receivers",
+                    f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
+                    f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
+                    f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 | Raw GAT Sigmoid: {gat_prob:.6f})",
+                ] + xai_drivers
+
                 if investigation_id not in self.investigations:
                     self.investigations[investigation_id] = {
                         "group_id": investigation_id,
@@ -594,12 +704,8 @@ class RealTimeStreamingEngine:
                         "is_fraud": True,
                         "model_used": "PyTorch Geometric GAT AML Model",
                         "model_confidence": f"{risk_score}%",
-                        "explanations": [
-                            f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
-                            f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
-                            f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                            f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob:.6f})",
-                        ]
+                        "explanations": base_exps,
+                        "xai_drivers": xai_drivers,
                     }
                 else:
                     inv = self.investigations[investigation_id]
@@ -616,12 +722,9 @@ class RealTimeStreamingEngine:
                     inv["amount_formatted"] = format_currency(src_prof["total_outgoing_amount"], pay_curr)
                     inv["tx_count"] = curr_out_cnt
                     inv["unique_receivers"] = curr_unique_recv
-                    inv["explanations"] = [
-                        f"Fan-Out pattern detected: 1 sender ({from_acc}) → {curr_unique_recv} unique receivers",
-                        f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
-                        f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                        f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob:.6f})",
-                    ]
+                    inv["explanations"] = base_exps
+                    inv["xai_drivers"] = xai_drivers
+
 
         self._save_state_to_disk()
         return tx_record
