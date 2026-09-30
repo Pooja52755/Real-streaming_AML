@@ -23,16 +23,21 @@ def print_header(title):
 
 def verify_datasets():
     print_header("1. VERIFYING DATASETS")
+    data_path = "Data/testing_data.csv"
     trans_path = "Data/testing_trans.csv"
     acc_path = "Data/testing_accounts.csv"
     
-    assert os.path.exists(trans_path), f"Missing {trans_path}"
+    assert os.path.exists(data_path) or os.path.exists(trans_path), "Missing testing dataset!"
     assert os.path.exists(acc_path), f"Missing {acc_path}"
     
-    df_t = pd.read_csv(trans_path)
+    active_path = data_path if os.path.exists(data_path) else trans_path
+    df_t = pd.read_csv(active_path)
     df_a = pd.read_csv(acc_path)
     
-    print(f" [OK] testing_trans.csv: {len(df_t)} rows loaded.")
+    # Strictly verify that testing dataset has NO 'Is Laundering' column
+    assert "Is Laundering" not in df_t.columns and "is_laundering" not in df_t.columns, f"CRITICAL ERROR: Laundering column must be absent from {active_path}!"
+    print(f" [OK] Confirmed: Laundering column is REMOVED from {active_path} ({len(df_t.columns)} raw feature columns: {list(df_t.columns)}).")
+    print(f" [OK] {os.path.basename(active_path)}: {len(df_t)} rows loaded.")
     print(f" [OK] testing_accounts.csv: {len(df_a)} accounts loaded.")
     
     earliest_ts = df_t["Timestamp"].min()
@@ -69,7 +74,7 @@ def verify_engine():
     print_header("3. VERIFYING REAL-TIME STREAMING ENGINE (fraud_data.py)")
     import fraud_data
     
-    fraud_data.reset_stream()
+    fraud_data.reset_stream(clear_decisions=True)
     status_0 = fraud_data.get_stream_status()
     print(f" [OK] Engine Reset: current_idx={status_0['current_idx']}, total_txs={status_0['total_txs']}")
     
@@ -82,12 +87,12 @@ def verify_engine():
     eng = fraud_data.RealTimeStreamingEngine.get_instance()
     orig_model = eng.model
     eng.model = None
-    eng.reset_state()
+    eng.reset_state(clear_decisions=True)
     tx_offline = eng.process_next_transaction()
     assert tx_offline["risk_tier"] == "MODEL_OFFLINE" and tx_offline["risk_score"] == 0, "Removing GAT model must produce MODEL_OFFLINE"
     print(" [OK] Verified: Removing GAT model triggers MODEL_OFFLINE (no hardcoded fallbacks).")
     eng.model = orig_model
-    eng.reset_state()
+    eng.reset_state(clear_decisions=True)
 
     # Stream to fan-out (step 12 transactions to reach GROUP-8004943A0 fan-out)
     for _ in range(12):
@@ -112,7 +117,7 @@ def verify_engine():
     assert all(inv["group_id"] != inv_id for inv in active_after), "Approved investigation should be cleared from active alerts"
     print(f" [OK] Approved alert successfully cleared from active investigations.")
     
-    # Verify persistence in live_stream_state.json
+    # Verify persistence in live_stream_state.json and auditor_decisions.json
     state_file = "live_stream_state.json"
     assert os.path.exists(state_file), f"Missing {state_file}"
     with open(state_file, "r", encoding="utf-8") as f:
@@ -120,8 +125,52 @@ def verify_engine():
     assert inv_id in st.get("auditor_decisions", {}), "Auditor decision must be persisted in live_stream_state.json"
     print(f" [OK] Auditor decision successfully verified in {state_file}")
 
+    # Verify fanout_decisions.json
+    fo_file = "Data/fanout_decisions.json"
+    assert os.path.exists(fo_file), f"Missing {fo_file}"
+    with open(fo_file, "r", encoding="utf-8") as f:
+        fo_data = json.load(f)
+    print(f" [OK] Data/fanout_decisions.json verified. Total fan-out episodes recorded: {len(fo_data)}")
+
+def verify_retraining_and_compliance_pipeline():
+    print_header("4. VERIFYING OVERNIGHT RETRAINING & MODEL REGISTRY")
+    import fraud_data
+
+    # Submit sample transaction decisions for retraining
+    proc_txs = fraud_data.get_processed_transactions_list()
+    for tx in proc_txs[:5]:
+        tx_id = tx["tx_id"]
+        dec = "🚫 Confirm Laundering (Block / SAR)" if tx.get("risk_tier") in ["High", "Medium"] else "✅ Approve Transaction (Legitimate)"
+        fraud_data.submit_auditor_decision(tx_id, dec, "Verification suite verified case", target_type="transaction")
+
+    # Verify auditor_decisions.json
+    aud_file = "Data/auditor_decisions.json"
+    assert os.path.exists(aud_file), f"Missing {aud_file}"
+    with open(aud_file, "r", encoding="utf-8") as f:
+        aud_data = json.load(f)
+    assert len(aud_data) >= 5, "Expected at least 5 decisions in auditor_decisions.json"
+    print(f" [OK] Data/auditor_decisions.json verified. Total decisions: {len(aud_data)}")
+
+    # Execute Overnight Retraining
+    report = fraud_data.run_overnight_retraining(epochs=3, lr=0.001)
+    assert report.get("status") == "success", f"Retraining failed: {report}"
+    print(f" [OK] Overnight Retraining Succeeded: Pre-Loss={report['pre_loss']}, Post-Loss={report['post_loss']}")
+    print(f" [OK] Real Computed Metrics: Post-Accuracy={report['post_accuracy']}%, Precision={report['post_precision']}%, Recall={report['post_recall']}%")
+
+    # Verify model_registry.json
+    reg_file = "backend/GAT/model_registry.json"
+    assert os.path.exists(reg_file), f"Missing {reg_file}"
+    with open(reg_file, "r", encoding="utf-8") as f:
+        reg_data = json.load(f)
+    assert len(reg_data.get("models", [])) >= 2, "Expected at least 2 models in registry (base + retrained)"
+    print(f" [OK] backend/GAT/model_registry.json verified. Active version: {reg_data.get('active_version')}")
+
+    # Verify APScheduler status
+    sched = fraud_data.get_scheduler_status()
+    print(f" [OK] APScheduler Status: {sched.get('status')} | Schedule: {sched.get('schedule')} | Next Run: {sched.get('next_run')}")
+
 def verify_optional_fastapi():
-    print_header("4. CHECKING FASTAPI BACKEND (OPTIONAL)")
+    print_header("5. CHECKING FASTAPI BACKEND (OPTIONAL)")
     try:
         resp = requests.get("http://localhost:8000/", timeout=1.5)
         if resp.status_code == 200:
@@ -136,6 +185,7 @@ if __name__ == "__main__":
     verify_datasets()
     verify_models()
     verify_engine()
+    verify_retraining_and_compliance_pipeline()
     verify_optional_fastapi()
     print("\n" + "=" * 60)
     print(" ALL VERIFICATION CHECKS PASSED SUCCESSFULLY! [OK]")

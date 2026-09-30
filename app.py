@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,6 +9,19 @@ import textwrap
 import importlib
 import fraud_data
 import graph_vis
+
+def format_probability(p):
+    if p is None:
+        return "0.000000"
+    try:
+        p_val = float(p)
+    except (ValueError, TypeError):
+        return str(p)
+    if p_val == 0.0:
+        return "0.000000"
+    if p_val < 0.0001:
+        return f"{p_val:.8f}"
+    return f"{p_val:.6f}"
 
 
 
@@ -47,6 +61,21 @@ st.html(textwrap.dedent("""
     }
     .badge-low {
         background:#f0fdf4; color:#16a34a; border:1px solid #bbf7d0;
+        padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;
+        display:inline-block;
+    }
+    .badge-approved {
+        background:#f0fdf4; color:#16a34a; border:1px solid #bbf7d0;
+        padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;
+        display:inline-block;
+    }
+    .badge-blocked {
+        background:#fef2f2; color:#dc2626; border:1px solid #fecaca;
+        padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;
+        display:inline-block;
+    }
+    .badge-revised {
+        background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe;
         padding:3px 10px; border-radius:6px; font-size:11px; font-weight:700;
         display:inline-block;
     }
@@ -198,6 +227,12 @@ if "is_streaming" not in st.session_state:
     st.session_state.is_streaming = False
 if "stream_delay" not in st.session_state:
     st.session_state.stream_delay = 1.0
+if "revision_target_id" not in st.session_state:
+    st.session_state.revision_target_id = None
+if "selected_pred_tx_id" not in st.session_state:
+    st.session_state.selected_pred_tx_id = None
+if "retrain_result" not in st.session_state:
+    st.session_state.retrain_result = None
 
 # ─── Sidebar ─────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -209,24 +244,30 @@ with st.sidebar:
         </div>
         <div>
             <div class="sidebar-brand-title">AML Fraud Detection</div>
-            <div class="sidebar-brand-subtitle">GAT-based Transaction Monitoring</div>
+            <div class="sidebar-brand-subtitle">GAT Transaction Prediction & Audit</div>
         </div>
     </div>
     """))
 
-    default_page_idx = 1 if st.session_state.goto_graph else 0
+    nav_options = [
+        "Dashboard",
+        "Screen 2: Predictions & Feedback",
+        "Decisions",
+        "Graph Network"
+    ]
+    default_page_idx = 3 if st.session_state.goto_graph else 0
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Graph Network"],
+        nav_options,
         index=default_page_idx,
         label_visibility="collapsed"
     )
     if st.session_state.goto_graph and page == "Graph Network":
         st.session_state.goto_graph = False
 
-    # ── Live Streaming Simulation Controls ──
+    # ── Streaming Simulation Controls ──
     st.markdown("---")
-    st.markdown("<div style='font-size:12px;font-weight:700;color:#0f172a;margin-bottom:4px;'>⚡ Real-Time Stream Engine</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:12px;font-weight:700;color:#0f172a;margin-bottom:4px;'>⚡ Transaction Streaming Engine</div>", unsafe_allow_html=True)
     status = fraud_data.get_stream_status()
     curr_tx = status["current_idx"]
     tot_tx = status["total_txs"]
@@ -274,7 +315,7 @@ with st.sidebar:
 
     btn_s3, btn_s4 = st.columns(2)
     with btn_s3:
-        if st.button("⚡ Run All 100", key="btn_stream_all", use_container_width=True, disabled=(curr_tx >= tot_tx or st.session_state.is_streaming)):
+        if st.button(f"⚡ Run All ({tot_tx})", key="btn_stream_all", use_container_width=True, disabled=(curr_tx >= tot_tx or st.session_state.is_streaming)):
             fraud_data.step_stream(tot_tx - curr_tx)
             st.rerun()
     with btn_s4:
@@ -284,6 +325,27 @@ with st.sidebar:
             st.session_state.selected_tx_id = None
             st.session_state.selected_sub_tx = None
             st.rerun()
+
+    # ── Reviewed Transactions Filter & Feedback Options on Sidebar ──
+    st.markdown("---")
+    st.markdown("<div style='font-size:12px;font-weight:800;color:#0f172a;margin-bottom:6px;'>⚖️ Reviewed Transactions</div>", unsafe_allow_html=True)
+    all_decs_sidebar = fraud_data.get_all_auditor_decisions()
+    app_count = sum(1 for d in all_decs_sidebar if d.get("decision") == "Approve")
+    rej_count = sum(1 for d in all_decs_sidebar if d.get("decision") == "Reject")
+    esc_count = sum(1 for d in all_decs_sidebar if d.get("decision") == "Escalate")
+
+    sidebar_decision_view = st.radio(
+        "Reviewed Transactions:",
+        [
+            f"🚨 Active Alerts ({active_cnt})",
+            f"✅ Approved Cases ({app_count})",
+            f"🚫 Rejected Cases ({rej_count})",
+            f"⚠️ Escalated Cases ({esc_count})",
+            f"📋 All Decisions Ledger ({len(all_decs_sidebar)})"
+        ],
+        key="sidebar_decision_view"
+    )
+    st.caption("💡 Filter groups by compliance status: **Approved**, **Rejected**, or **Escalated**.")
 
     st.html("<br><hr><div style='text-align:center;color:#94a3b8;font-size:11px;'>© AML Fraud Investigation System</div>")
 
@@ -433,16 +495,36 @@ if page == "Dashboard":
     #  LEFT PANEL — Flagged Accounts (Fan-Out Groups)
     # ════════════════════════════════════════════════════════════════════
     with col_left:
-        st.html('<div class="section-label">🚨 Flagged Sender Investigations</div>')
+        # Check sidebar filter
+        side_view = st.session_state.get("sidebar_decision_view", "Active Alerts")
+        if "Approved" in side_view:
+            sec_title = "✅ Approved Groups"
+            all_txs = fraud_data.get_approved_investigations()
+            empty_msg = "No groups have been marked as Approved yet. Review active alerts to approve legitimate accounts."
+        elif "Rejected" in side_view:
+            sec_title = "🚫 Rejected Groups"
+            all_txs = fraud_data.get_rejected_investigations()
+            empty_msg = "No groups have been marked as Rejected yet. Review active alerts to reject suspicious accounts."
+        elif "Escalated" in side_view:
+            sec_title = "⚠️ Escalated Groups (SAR Review)"
+            all_txs = fraud_data.get_escalated_investigations()
+            empty_msg = "No groups have been escalated yet. Review active alerts to escalate complex cases."
+        elif "All Decisions" in side_view:
+            sec_title = "📋 All Audited Groups"
+            all_txs = [inv for inv in fraud_data.get_all_investigations() if inv.get("auditor_decision") in ["Approve", "Reject", "Escalate"]]
+            empty_msg = "No authorizer decisions have been recorded yet."
+        else:
+            sec_title = "🚨 Active Flagged Investigations"
+            all_txs = fraud_data.get_all_flagged_senders()
+            empty_msg = "No active alerts. Stream transactions using the sidebar to monitor graph escalation."
 
-        all_txs = fraud_data.get_all_flagged_senders()
+        st.html(f'<div class="section-label">{sec_title}</div>')
 
         if not all_txs:
-            st.html("""
+            st.html(f"""
             <div style="background:#ffffff;border:1px dashed #cbd5e1;border-radius:10px;padding:24px 16px;text-align:center;">
-                <div style="font-size:24px;margin-bottom:8px;">🟢</div>
-                <div style="font-size:13px;font-weight:700;color:#334155;">No Active Alerts</div>
-                <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Stream transactions using the sidebar to monitor real-time graph escalation.</div>
+                <div style="font-size:24px;margin-bottom:8px;">ℹ️</div>
+                <div style="font-size:13px;font-weight:700;color:#334155;">{empty_msg}</div>
             </div>
             """)
         else:
@@ -454,10 +536,22 @@ if page == "Dashboard":
                 name = tx.get("name") or fraud_data.get_customer_profile(acc).get("name", acc)
                 risk = tx.get("risk", "High")
                 score = tx.get("risk_score", 100)
+                if score >= 80:
+                    risk = "High"
                 pattern = tx.get("pattern", "FAN-OUT")
                 gid = tx.get("group_id", 1)
                 tx_id = tx.get("tx_id", f"GROUP-{gid}")
                 is_sel = (tx_id == st.session_state.selected_tx_id or str(gid) == str(st.session_state.selected_tx_id))
+
+                aud_decision = tx.get("auditor_decision")
+                if aud_decision == "Approve":
+                    dec_pill = '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">✅ APPROVED</span>'
+                elif aud_decision == "Reject":
+                    dec_pill = '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">🚫 REJECTED</span>'
+                elif aud_decision == "Escalate":
+                    dec_pill = '<span style="background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">⚠️ ESCALATED</span>'
+                else:
+                    dec_pill = f'<span class="badge-{risk.lower()}">{risk.upper()}</span>'
 
                 risk_color = "#ef4444" if risk == "High" else "#f59e0b" if risk == "Medium" else "#16a34a"
                 sel_bg = "#eff6ff" if is_sel else "#ffffff"
@@ -473,7 +567,7 @@ if page == "Dashboard":
                             <div class="flagged-acc-id">Sender: {acc}</div>
                             <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
                         </div>
-                        <span class="badge-{risk.lower()}">{risk.upper()}</span>
+                        {dec_pill}
                     </div>
                     <div class="flagged-pattern">📌 {pattern} · Group {gid} ({tx_count_str} txs)</div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
@@ -504,6 +598,8 @@ if page == "Dashboard":
             
             risk = curr_tx.get("risk", "High")
             risk_score = curr_tx.get("risk_score", 100)
+            if risk_score >= 80:
+                risk = "High"
             risk_col = "#dc2626" if risk == "High" else "#d97706" if risk == "Medium" else "#16a34a"
             pattern = curr_tx.get("pattern", "FAN-OUT")
             gid = curr_tx.get("group_id", 1)
@@ -569,11 +665,12 @@ if page == "Dashboard":
             xai_extra = "xai-box-high" if is_high else ""
             exps_clean = []
             gat_prob_val = curr_tx.get("gat_prob", 0.0)
+            gat_prob_str = format_probability(gat_prob_val)
             for e in curr_tx.get("explanations", []):
                 if "payment format" in e.lower() or "currency:" in e.lower():
                     continue
                 if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
-                    exps_clean.append(f"GAT Graph Attention Network (PyG): {risk.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob_val:.6f})")
+                    exps_clean.append(f"GAT Graph Attention Network (PyG): {risk.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob_str})")
                 else:
                     exps_clean.append(e)
             exps_html = "".join([f"<li>{e}</li>" for e in exps_clean])
@@ -598,66 +695,112 @@ if page == "Dashboard":
             </div>
             """))
 
-            # Authorised Bank Auditor Decision Panel
-            if is_high or risk == "Medium":
-                tx_key = curr_tx.get("tx_id", f"GROUP-{gid}")
-                already_submitted = st.session_state.human_decision_submitted.get(tx_key)
+            # Authorised Bank Authorizer Decision Panel
+            tx_key = curr_tx.get("tx_id", f"GROUP-{gid}")
+            all_decs_lookup = {d["target_id"]: d for d in fraud_data.get_all_auditor_decisions()}
+            already_decided = all_decs_lookup.get(tx_key) or all_decs_lookup.get(f"GROUP-{curr_tx.get('account')}")
 
+            if already_decided:
+                dec_val = already_decided.get("decision", "Approve")
+                is_app = (dec_val == "Approve")
+                is_esc = (dec_val == "Escalate")
+                b_color = "#10b981" if is_app else ("#f59e0b" if is_esc else "#ef4444")
+                bg_color = "#f0fdf4" if is_app else ("#fffbeb" if is_esc else "#fef2f2")
+                txt_color = "#166534" if is_app else ("#b45309" if is_esc else "#991b1b")
+                verdict_title = "✅ AUTHORIZER DECISION: APPROVE" if is_app else ("⚠️ AUTHORIZER DECISION: ESCALATE (SAR)" if is_esc else "🚫 AUTHORIZER DECISION: REJECT")
+
+                st.html(textwrap.dedent(f"""
+                <div style="background:{bg_color};border:2px solid {b_color};border-radius:10px;padding:16px 20px;margin-top:14px;margin-bottom:12px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <span style="font-size:15px;font-weight:900;color:{txt_color};">
+                                {verdict_title}
+                            </span>
+                        </div>
+                        <span style="font-size:11.5px;color:#64748b;">🕒 {already_decided.get('timestamp', '—')}</span>
+                    </div>
+                    <div style="font-size:12.5px;color:#0f172a;margin-top:10px;background:#ffffff;padding:10px 14px;border-radius:6px;border-left:4px solid {b_color};">
+                        <b>Authorizer Feedback Notes:</b> {already_decided.get('notes') or '(No compliance notes entered)'}
+                    </div>
+                    {f'<div style="font-size:11.5px;color:#2563eb;margin-top:6px;"><b>Revision Remarks:</b> {already_decided.get("revision_remark")}</div>' if already_decided.get("is_revised") and already_decided.get("revision_remark") else ''}
+                </div>
+                """))
+
+                rev_active_key = f"dash_rev_active_{tx_key}"
+                if not st.session_state.get(rev_active_key, False):
+                    if st.button(f"✏️ Revise Decision for Group {gid}", key=f"btn_open_rev_{tx_key}", use_container_width=True):
+                        st.session_state[rev_active_key] = True
+                        st.rerun()
+                else:
+                    st.html("""
+                    <div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:10px;">
+                        <div style="font-size:13px;font-weight:800;color:#92400e;">✏️ Revise Authorizer Decision & Feedback</div>
+                        <div style="font-size:11.5px;color:#78350f;">Update the verdict or compliance notes. Audit trail will be preserved.</div>
+                    </div>
+                    """)
+                    r_c1, r_c2 = st.columns([1, 1.3])
+                    with r_c1:
+                        rev_idx = 0 if is_app else (2 if is_esc else 1)
+                        new_choice = st.radio(
+                            "Revised Verdict",
+                            ["Approve", "Reject", "Escalate"],
+                            index=rev_idx,
+                            format_func=lambda c: "✅ Approve (Legitimate)" if c == "Approve" else ("🚫 Reject (Confirmed Laundering)" if c == "Reject" else "⚠️ Escalate (Senior Review / SAR)"),
+                            key=f"radio_rev_dash_{tx_key}"
+                        )
+                    with r_c2:
+                        new_notes = st.text_area(
+                            "Updated Feedback Notes",
+                            value=already_decided.get("notes", ""),
+                            key=f"area_rev_dash_{tx_key}",
+                            height=90
+                        )
+                    rev_remark = st.text_input("Reason for Revision", value="Authorizer audit re-assessment", key=f"inp_remark_dash_{tx_key}")
+                    b_r1, b_r2 = st.columns([1, 1])
+                    with b_r1:
+                        if st.button("💾 Save Revised Decision", key=f"btn_save_rev_dash_{tx_key}", type="primary", use_container_width=True):
+                            fraud_data.revise_auditor_decision(tx_key, new_choice, new_notes, rev_remark)
+                            st.session_state[rev_active_key] = False
+                            st.toast(f"Decision for Group {gid} updated to {new_choice}!", icon="✅")
+                            st.rerun()
+                    with b_r2:
+                        if st.button("Cancel", key=f"btn_cancel_rev_dash_{tx_key}", use_container_width=True):
+                            st.session_state[rev_active_key] = False
+                            st.rerun()
+
+            elif is_high or risk == "Medium":
                 st.html(textwrap.dedent(f"""
                 <div class="human-decision-panel">
                     <div class="human-decision-title">
-                        🏦 Authorised Bank Auditor Decision Required — Group {gid}
+                        🏦 Authorised Bank Authorizer Decision Required — Group {gid}
                     </div>
-                    <div style="font-size:12px;color:#92400e;margin-bottom:12px;">
-                        Risk Score: <b>{risk_score}/100</b> — This Fan-Out investigation requires an authorised bank auditor decision.
+                    <div style="font-size:12px;color:#92400e;margin-bottom:8px;">
+                        Risk Score: <b>{risk_score}/100</b> — Review this flagged fan-out group and record an authoritative compliance verdict.
                     </div>
                 </div>
                 """))
 
-                if already_submitted:
-                    decision_val = already_submitted["decision"]
-                    st.success(f"**Decision Recorded:** {decision_val}")
-                    st.info(f"**Authorised Bank Auditor Notes:** {already_submitted['notes'] or '(none)'}")
-                    if st.button("Revise Decision", key=f"revise_{tx_key}"):
-                        del st.session_state.human_decision_submitted[tx_key]
-                        st.rerun()
-                else:
-                    dec_col1, dec_col2 = st.columns([1, 1])
-                    with dec_col1:
-                        decision = st.radio(
-                            "**Authorised Bank Auditor Decision**",
-                            ["✅ Approve Transaction", "🚫 Block Transaction", "📤 Escalate to Senior Investigator"],
-                            key=f"decision_{tx_key}",
-                            index=2
-                        )
-                    with dec_col2:
-                        notes = st.text_area(
-                            "**Authorised Bank Auditor Notes**",
-                            placeholder="Add reasoning, observations, or escalation notes...",
-                            key=f"notes_{tx_key}",
-                            height=180
-                        )
+                dec_col1, dec_col2 = st.columns([1, 1.2])
+                with dec_col1:
+                    decision = st.radio(
+                        "**Authorizer Decision**",
+                        ["Approve", "Reject", "Escalate"],
+                        format_func=lambda c: "✅ Approve (Legitimate)" if c == "Approve" else ("🚫 Reject (Confirmed Laundering)" if c == "Reject" else "⚠️ Escalate (Senior Review / SAR)"),
+                        key=f"decision_{tx_key}",
+                        index=1 if risk in ["High", "Medium"] else 0
+                    )
+                with dec_col2:
+                    notes = st.text_area(
+                        "**Authorizer Feedback Notes**",
+                        placeholder="Add compliance notes, counterparty verification, or fan-out justification...",
+                        key=f"notes_{tx_key}",
+                        height=130
+                    )
 
-                    st.html("""
-                    <div class="human-decision-disclaimer">
-                        ⚠️ <b>Disclaimer:</b> By submitting, you confirm this decision is made by an
-                        AUTHORISED BANK AUDITOR. The GAT AML model provided supporting analysis only.
-                        This action will be logged and audited.
-                    </div>
-                    """)
-
-                    if st.button(f"📋 Submit Decision for Group {gid}", key=f"submit_{tx_key}", type="primary", use_container_width=True):
-                        fraud_data.submit_auditor_decision(tx_key, decision, notes)
-                        st.session_state.human_decision_submitted[tx_key] = {
-                            "decision": decision,
-                            "notes": notes,
-                            "timestamp": datetime.now().strftime("%d %b %Y, %I:%M %p")
-                        }
-                        if "Approve" in decision:
-                            rem_txs = fraud_data.get_all_flagged_senders()
-                            st.session_state.selected_tx_id = rem_txs[0]["tx_id"] if rem_txs else None
-                            st.session_state.selected_sub_tx = None
-                        st.rerun()
+                if st.button(f"📋 Submit Decision for Group {gid}", key=f"submit_{tx_key}", type="primary", use_container_width=True):
+                    fraud_data.submit_auditor_decision(tx_key, decision, notes, target_type="group")
+                    st.toast(f"Decision for Group {gid} saved ({decision})!", icon="✅")
+                    st.rerun()
 
             st.html(textwrap.dedent("""
             <div class="ai-advisory" style="margin-top:16px;">
@@ -679,7 +822,7 @@ if page == "Dashboard":
             <div class="profile-card profile-empty">
                 <div style="font-size:32px;margin-bottom:10px;">👤</div>
                 <div style="font-weight:700;font-size:14px;color:#475569;">No Account Selected</div>
-                <div style="font-size:11.5px;color:#94a3b8;margin-top:4px;">Stream transactions to view real-time customer behavioral profiles.</div>
+                <div style="font-size:11.5px;color:#94a3b8;margin-top:4px;">Stream transactions to view customer behavioral profiles.</div>
             </div>
             """)
         else:
@@ -795,6 +938,887 @@ if page == "Dashboard":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  SCREEN 2: PREDICTIONS & HUMAN FEEDBACK
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Screen 2: Predictions & Feedback":
+    st.html(textwrap.dedent("""
+    <div>
+        <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0;">Screen 2: Transaction Predictions & Authorizer Feedback</h2>
+        <div style="font-size:13px;color:#64748b;margin-top:2px;">
+            Inspect neural GAT predictions across streaming transactions. Submit authoritative human decisions to power the overnight model retraining loop.
+        </div>
+    </div>
+    <br>
+    """))
+
+    proc_txs = fraud_data.get_processed_transactions_list()
+    all_decisions_list = fraud_data.get_all_auditor_decisions()
+    all_decisions = {d["target_id"]: d for d in all_decisions_list}
+
+    def get_decision_for_tx(tx_id, from_account):
+        if tx_id in all_decisions:
+            return all_decisions[tx_id]
+        if f"GROUP-{from_account}" in all_decisions:
+            return all_decisions[f"GROUP-{from_account}"]
+        if from_account in all_decisions:
+            return all_decisions[from_account]
+        return None
+
+    tot_processed = len(proc_txs)
+    tot_reviewed = len(all_decisions_list)
+    high_preds = sum(1 for t in proc_txs if t.get("risk_tier") == "High")
+    pending = max(0, tot_processed - tot_reviewed) if tot_processed > 0 else 0
+
+    # Top Metric Banner (Only Reviewed count kept as requested)
+    col_k1, _ = st.columns([1, 3])
+    with col_k1:
+        st.metric("Reviewed Transactions", f"{tot_reviewed}")
+
+    # Authorizer Action Center (Real decisions, no fake seeding)
+    col_act1, col_act2 = st.columns([1.8, 1.2])
+    with col_act1:
+        st.caption("💡 **Authorizer Workflow:** Stream transactions using sidebar controls (e.g. 40-50 cases), review predictions in the stream below, submit human decisions, and trigger overnight retraining.")
+    with col_act2:
+        with st.expander("⚡ Batch Authorizer Actions", expanded=False):
+            batch_choice = st.selectbox(
+                "Authorizer Verdict",
+                ["Approve All Pending Low-Risk (Label: 0)", "Reject All Pending High-Risk (Label: 1)", "Escalate All Pending High-Risk (SAR / Senior Review)"],
+                key="batch_cat"
+            )
+            batch_note = st.text_input("Compliance Audit Note", value="Authorizer audit verification", key="batch_note_input")
+            if st.button("Apply Batch Decision", key="btn_apply_batch", type="secondary", use_container_width=True):
+                applied = 0
+                for t in proc_txs:
+                    t_id = t["tx_id"]
+                    if t_id not in all_decisions:
+                        tier = t.get("risk_tier", "Low")
+                        is_fo = t.get("is_fanout", False)
+                        if "Approve" in batch_choice and tier == "Low" and not is_fo:
+                            fraud_data.submit_auditor_decision(
+                                t_id, "Approve",
+                                f"{batch_note} — Verified legitimate commercial/personal transaction",
+                                target_type="transaction"
+                            )
+                            applied += 1
+                        elif "Reject" in batch_choice and (tier in ["High", "Medium"] or is_fo):
+                            fraud_data.submit_auditor_decision(
+                                t_id, "Reject",
+                                f"{batch_note} — Confirmed suspicious dispersion / structuring pattern",
+                                target_type="transaction"
+                            )
+                            applied += 1
+                        elif "Escalate" in batch_choice and (tier in ["High", "Medium"] or is_fo):
+                            fraud_data.submit_auditor_decision(
+                                t_id, "Escalate",
+                                f"{batch_note} — Escalated for senior AML audit / SAR filing",
+                                target_type="transaction"
+                            )
+                            applied += 1
+                if applied > 0:
+                    st.toast(f"Saved {applied} real authorizer decisions!", icon="✅")
+                    st.rerun()
+                else:
+                    st.toast("No matching pending transactions found for this filter.", icon="ℹ️")
+
+    st.write("")
+
+    # ════════════════════════════════════════════════════════════════════
+    #  3-COLUMN ARCHITECTURE (MATCHING DASHBOARD LAYOUT)
+    #  col_left: Target Cards | col_center: Deep Inspection | col_right: Customer Profile
+    # ════════════════════════════════════════════════════════════════════
+    col_s2_left, col_s2_center, col_s2_right = st.columns([1.0, 1.8, 1.2])
+
+    with col_s2_left:
+        # Toggle between Reviewed Decisions and Stream Predictions
+        if proc_txs and all_decisions_list:
+            s2_view = st.radio(
+                "Inspect Target:",
+                [f"📋 Reviewed Decisions ({tot_reviewed})", f"⚡ Streamed Predictions ({tot_processed})"],
+                horizontal=True,
+                key="s2_inspect_view_radio"
+            )
+        elif all_decisions_list:
+            s2_view = f"📋 Reviewed Decisions ({tot_reviewed})"
+            st.caption(f"⚖️ **Reviewed Audit Store** ({tot_reviewed} Cases)")
+        else:
+            s2_view = f"⚡ Streamed Predictions ({tot_processed})"
+            st.caption(f"⚡ **Stream Predictions** ({tot_processed} Ingested)")
+
+        st.html('<div class="section-label">Inspection Queue</div>')
+
+        if "Reviewed" in s2_view:
+            if not all_decisions_list:
+                st.html("""
+                <div style="background:#ffffff;border:1px dashed #cbd5e1;border-radius:10px;padding:24px 16px;text-align:center;">
+                    <div style="font-size:24px;margin-bottom:8px;">ℹ️</div>
+                    <div style="font-size:13px;font-weight:700;color:#334155;">No authorizer decisions recorded yet.</div>
+                    <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Stream transactions via sidebar or submit decisions to review cases.</div>
+                </div>
+                """)
+            else:
+                valid_ids = [d["target_id"] for d in all_decisions_list]
+                if st.session_state.get("s2_selected_id") not in valid_ids:
+                    st.session_state.s2_selected_id = valid_ids[0]
+
+                for d in all_decisions_list:
+                    t_id = d.get("target_id", "—")
+                    acc = d.get("account", "Unknown")
+                    meta = fraud_data.get_account_meta(acc)
+                    name = meta.get("entity_name", acc)
+                    amt = d.get("amount", "—")
+                    to_info = d.get("to_account", "—")
+                    dec_val = d.get("decision", "Approve")
+                    is_sel = (t_id == st.session_state.get("s2_selected_id"))
+
+                    if dec_val == "Approve":
+                        dec_pill = '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">✅ APPROVED</span>'
+                    elif dec_val == "Reject":
+                        dec_pill = '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">🚫 REJECTED</span>'
+                    else:
+                        dec_pill = '<span style="background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">⚠️ ESCALATED</span>'
+
+                    sel_bg = "#eff6ff" if is_sel else "#ffffff"
+                    sel_border = "#93c5fd" if is_sel else "#e2e8f0"
+
+                    st.html(textwrap.dedent(f"""
+                    <div class="flagged-card" style="background:{sel_bg};border-color:{sel_border};margin-bottom:10px;">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                            <div>
+                                <div class="flagged-acc-id">Sender: {acc}</div>
+                                <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
+                            </div>
+                            {dec_pill}
+                        </div>
+                        <div class="flagged-pattern" style="margin-top:6px;">📌 Case {t_id} · Volume: <b>{amt}</b></div>
+                        <div style="font-size:10.5px;color:#64748b;margin-top:2px;">{to_info}</div>
+                    </div>
+                    """))
+
+                    if st.button(f"Inspect Case {t_id} →", key=f"s2_btn_rev_{t_id}", use_container_width=True):
+                        st.session_state.s2_selected_id = t_id
+                        st.session_state.s2_selected_sub_tx = None
+                        st.rerun()
+
+        else:
+            # Streamed Predictions View
+            if not proc_txs:
+                st.html("""
+                <div style="background:#ffffff;border:1px dashed #cbd5e1;border-radius:10px;padding:24px 16px;text-align:center;">
+                    <div style="font-size:24px;margin-bottom:8px;">⏳</div>
+                    <div style="font-size:13px;font-weight:700;color:#334155;">No transactions streamed yet.</div>
+                    <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Click <b>'▶ Step +1'</b> or <b>'⏩ Step +10'</b> in the sidebar to stream transactions.</div>
+                </div>
+                """)
+            else:
+                valid_ids = [t["tx_id"] for t in proc_txs]
+                if st.session_state.get("s2_selected_id") not in valid_ids:
+                    st.session_state.s2_selected_id = valid_ids[-1]
+
+                for t in reversed(proc_txs):
+                    t_id = t["tx_id"]
+                    acc = t.get("from_account", "—")
+                    meta = fraud_data.get_account_meta(acc)
+                    name = meta.get("entity_name", acc)
+                    risk = t.get("risk_tier", "Low")
+                    score = t.get("risk_score", 10)
+                    amt = t.get("amount_formatted", "$0.00")
+                    is_fo = t.get("is_fanout", False)
+                    is_sel = (t_id == st.session_state.get("s2_selected_id"))
+
+                    d_entry = get_decision_for_tx(t_id, acc)
+                    if d_entry:
+                        dec_val = d_entry.get("decision", "Approve")
+                        dec_pill = '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">✅ APPROVED</span>' if dec_val == "Approve" else ('<span style="background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">⚠️ ESCALATED</span>' if dec_val == "Escalate" else '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">🚫 REJECTED</span>')
+                    else:
+                        dec_pill = f'<span class="badge-{risk.lower()}">{risk.upper()}</span>'
+
+                    sel_bg = "#eff6ff" if is_sel else "#ffffff"
+                    sel_border = "#93c5fd" if is_sel else "#e2e8f0"
+                    risk_color = "#ef4444" if risk == "High" else "#f59e0b" if risk == "Medium" else "#16a34a"
+                    bar_width = max(5, min(100, score))
+
+                    st.html(textwrap.dedent(f"""
+                    <div class="flagged-card flagged-card-{risk.lower()}" style="background:{sel_bg};border-color:{sel_border};margin-bottom:10px;">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                            <div>
+                                <div class="flagged-acc-id">Sender: {acc}</div>
+                                <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
+                            </div>
+                            {dec_pill}
+                        </div>
+                        <div class="flagged-pattern" style="margin-top:4px;">TX #{t_id} · {amt} ({t.get('payment_format', 'Wire')})</div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+                            <div class="risk-score-bar-bg" style="flex:1;margin-right:8px;">
+                                <div class="risk-score-bar-fill" style="width:{bar_width}%;background:{risk_color};"></div>
+                            </div>
+                            <span style="font-size:11px;font-weight:700;color:{risk_color};">{score}/100</span>
+                        </div>
+                    </div>
+                    """))
+
+                    if st.button(f"Inspect TX #{t_id} →", key=f"s2_btn_tx_{t_id}", use_container_width=True):
+                        st.session_state.s2_selected_id = t_id
+                        st.session_state.s2_selected_sub_tx = None
+                        st.rerun()
+
+    # ════════════════════════════════════════════════════════════════════
+    #  CENTER PANEL — Deep Inspection, Routing Flow Table, XAI & Decisions
+    # ════════════════════════════════════════════════════════════════════
+    with col_s2_center:
+        selected_id = st.session_state.get("s2_selected_id")
+        if not selected_id:
+            st.info("👈 Select a case or transaction from the left panel to inspect predictions, routing flow, and authorizer feedback.")
+            st.stop()
+
+        inv = fraud_data.get_investigation_by_id(selected_id)
+        tx_match = next((t for t in proc_txs if t["tx_id"] == selected_id), None)
+
+        sender_acc = inv.get("account") or (tx_match.get("from_account") if tx_match else selected_id.replace("GROUP-", ""))
+        src_meta = fraud_data.get_account_meta(sender_acc)
+        sender_name = src_meta.get("entity_name", sender_acc)
+        cur_d = all_decisions.get(selected_id) or all_decisions.get(f"GROUP-{sender_acc}") or get_decision_for_tx(selected_id, sender_acc)
+
+        pred_risk = tx_match.get("risk_tier") if tx_match else inv.get("risk", "High")
+        pred_score = tx_match.get("risk_score") if tx_match else inv.get("risk_score", 98)
+        if pred_score >= 80:
+            pred_risk = "High"
+        pred_sig = tx_match.get("gat_prob") if tx_match else inv.get("gat_prob", 0.046942)
+        pred_sig_str = format_probability(pred_sig)
+        amt_disp = cur_d.get("amount") if cur_d and cur_d.get("amount") not in ["—", "\u2014"] else (tx_match.get("amount_formatted") if tx_match else inv.get("amount_formatted", "$0.00"))
+        ts_disp = cur_d.get("timestamp") if cur_d else (tx_match.get("timestamp") if tx_match else inv.get("timestamp", "—"))
+        pay_fmt = tx_match.get("payment_format") if tx_match else inv.get("payment_format", "Wire")
+        curr_name = tx_match.get("currency") if tx_match else inv.get("payment_currency", "US Dollar")
+        uniq_recv = inv.get("unique_receivers") or (tx_match.get("sender_unique_receivers", 1) if tx_match else 1)
+
+        is_fo = (inv.get("unique_receivers", 1) > 1 or (tx_match and tx_match.get("is_fanout")))
+        pattern_label = f"⚠️ Max {uniq_recv}-degree Fan-Out" if is_fo else "Direct 1-Hop Transfer"
+        target_label_disp = selected_id if selected_id.startswith("GROUP-") else f"TX #{selected_id}"
+
+        st.html(textwrap.dedent(f"""
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div>
+                <div style="font-size:16px;font-weight:800;color:#0f172a;">
+                    {target_label_disp}
+                    <span style="font-size:12px;font-weight:500;color:#64748b;margin-left:6px;">{pattern_label}</span>
+                </div>
+                <div style="font-size:12px;color:#475569;margin-top:2px;">
+                    Sender: <b>{sender_acc}</b> ({sender_name}) · Bank: <b>{src_meta.get('bank_name', 'Global Bank')}</b> · Timestamp: {ts_disp}
+                </div>
+            </div>
+            <span class="badge-{pred_risk.lower()}">{pred_risk.upper()} RISK · {pred_score}/100</span>
+        </div>
+        """))
+
+        if st.button("🕸️ View in Graph Network", key="btn_s2_goto_graph", use_container_width=False):
+            st.session_state.selected_tx_id = f"GROUP-{sender_acc}"
+            st.session_state.goto_graph = True
+            st.rerun()
+
+        st.html('<div class="section-label">Transaction Routing Flow (Source & Receivers)</div>')
+
+        fan_rows = fraud_data.get_fan_out_rows(selected_id, include_source=True)
+        if not fan_rows:
+            r_acc = cur_d.get("to_account") if cur_d else (tx_match.get("to_account", "—") if tx_match else "—")
+            r_meta = fraud_data.get_account_meta(r_acc)
+            fan_rows = [
+                {
+                    "sub_tx_id": f"SRC-{sender_acc[:8]}",
+                    "role": "Source (Sender)",
+                    "account": sender_acc,
+                    "to_account": sender_acc,
+                    "is_source": True,
+                    "amount": amt_disp,
+                    "time": ts_disp,
+                    "payment_format": pay_fmt,
+                    "gat_signal": pred_risk.upper(),
+                    "to_entity_name": sender_name,
+                    "to_entity_id": src_meta.get("entity_id", f"ENT-{sender_acc[:8]}"),
+                    "to_bank_name": src_meta.get("bank_name", "Global Bank"),
+                    "to_bank_id": src_meta.get("bank_id", "BNK-001"),
+                },
+                {
+                    "sub_tx_id": selected_id,
+                    "role": "Receiver (Hop 1)",
+                    "account": r_acc,
+                    "to_account": r_acc,
+                    "is_source": False,
+                    "amount": amt_disp,
+                    "time": ts_disp,
+                    "payment_format": pay_fmt,
+                    "gat_signal": pred_risk.upper(),
+                    "to_entity_name": r_meta.get("entity_name", f"Account {r_acc}"),
+                    "to_entity_id": r_meta.get("entity_id", f"ENT-{r_acc[:8]}"),
+                    "to_bank_name": r_meta.get("bank_name", "Global Bank"),
+                    "to_bank_id": r_meta.get("bank_id", "BNK-002"),
+                }
+            ]
+
+        df_fan = pd.DataFrame(fan_rows)
+        df_display = df_fan[["role", "account", "to_entity_name", "amount", "time", "payment_format", "gat_signal"]].copy()
+        df_display.columns = ["Role", "Account Number", "Entity Name", "Amount", "Timestamp", "Payment Format", "GAT Signal"]
+
+        s2_event = st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="s2_fan_table"
+        )
+
+        s2_sel_rows = s2_event.selection.get("rows", []) if s2_event.selection else []
+        if s2_sel_rows and len(fan_rows) > s2_sel_rows[0]:
+            st.session_state.s2_selected_sub_tx = fan_rows[s2_sel_rows[0]]
+
+        st.html("""
+        <div style="font-size:10.5px;color:#94a3b8;margin-top:4px;">
+            🖱️ Click any row (Source Sender or Hop-1 Receiver) to inspect its behavioral customer profile on the right.
+        </div>
+        """)
+
+        # XAI Neural Explanation Box
+        xai_box_class = "xai-box-high" if pred_risk == "High" else ""
+        st.html(textwrap.dedent(f"""
+        <div class="xai-box {xai_box_class}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div class="xai-title">🔎 GAT Neural Detection Analysis — {target_label_disp}</div>
+                <span class="badge-{pred_risk.lower()}">{pred_risk.upper()}</span>
+            </div>
+            <ul class="xai-list">
+                <li>GAT Graph Attention Network (PyG): {pred_risk.upper()} — Calibrated Risk Score: {pred_score}/100 (Raw Neural Sigmoid: {pred_sig_str})</li>
+                <li>Cumulative Transaction Volume: {amt_disp} ({curr_name}) via {pay_fmt}</li>
+                <li>Connected Counterparties: {len(fan_rows)-1 if len(fan_rows)>1 else 1} unique receiver(s) in active transaction trail</li>
+                {f"<li style='color:#dc2626;font-weight:700;'>🚨 {tx_match.get('retroactive_reason')}</li>" if tx_match and tx_match.get('retroactive_escalated') else ""}
+            </ul>
+        </div>
+        """))
+
+        # Authorizer Decision Panel
+        if cur_d:
+            dec_val = cur_d.get("decision", "Approve")
+            is_app = (dec_val == "Approve")
+            is_esc = (dec_val == "Escalate")
+            b_color = "#10b981" if is_app else ("#f59e0b" if is_esc else "#ef4444")
+            bg_color = "#f0fdf4" if is_app else ("#fffbeb" if is_esc else "#fef2f2")
+            txt_color = "#166534" if is_app else ("#b45309" if is_esc else "#991b1b")
+            verdict_title = "✅ AUTHORIZER DECISION: APPROVE" if is_app else ("⚠️ AUTHORIZER DECISION: ESCALATE (SAR)" if is_esc else "🚫 AUTHORIZER DECISION: REJECT")
+
+            st.html(textwrap.dedent(f"""
+            <div style="background:{bg_color};border:2px solid {b_color};border-radius:10px;padding:16px 20px;margin-top:14px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:15px;font-weight:900;color:{txt_color};">
+                        {verdict_title}
+                    </span>
+                    <span style="font-size:11.5px;color:#64748b;">🕒 {cur_d.get('timestamp', '—')}</span>
+                </div>
+                <div style="font-size:12.5px;color:#0f172a;margin-top:10px;background:#ffffff;padding:10px 14px;border-radius:6px;border-left:4px solid {b_color};">
+                    <b>Authorizer Feedback Notes:</b> {cur_d.get('notes') or '(No compliance notes entered)'}
+                </div>
+                {f'<div style="font-size:11.5px;color:#2563eb;margin-top:6px;"><b>Revision Remarks:</b> {cur_d.get("revision_remark")}</div>' if cur_d.get("is_revised") and cur_d.get("revision_remark") else ''}
+            </div>
+            """))
+
+            rev_key = f"s2_rev_active_{selected_id}"
+            if not st.session_state.get(rev_key, False):
+                if st.button(f"✏️ Revise Decision for {target_label_disp}", key=f"btn_s2_open_rev_{selected_id}", use_container_width=True):
+                    st.session_state[rev_key] = True
+                    st.rerun()
+            else:
+                st.html("""
+                <div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:10px;">
+                    <div style="font-size:13px;font-weight:800;color:#92400e;">✏️ Revise Authorizer Decision & Feedback</div>
+                    <div style="font-size:11.5px;color:#78350f;">Update the verdict or compliance notes. Audit trail will be preserved.</div>
+                </div>
+                """)
+                r_c1, r_c2 = st.columns([1, 1.3])
+                with r_c1:
+                    rev_idx = 0 if is_app else (2 if is_esc else 1)
+                    new_choice = st.radio(
+                        "Revised Verdict",
+                        ["Approve", "Reject", "Escalate"],
+                        index=rev_idx,
+                        format_func=lambda c: "✅ Approve (Legitimate)" if c == "Approve" else ("🚫 Reject (Laundering / Block)" if c == "Reject" else "⚠️ Escalate (Senior Review / SAR)"),
+                        key=f"radio_s2_rev_{selected_id}"
+                    )
+                with r_c2:
+                    new_notes = st.text_area(
+                        "Updated Feedback Notes",
+                        value=cur_d.get("notes", ""),
+                        key=f"area_s2_rev_{selected_id}",
+                        height=90
+                    )
+                rev_remark = st.text_input("Reason for Revision", value="Authorizer compliance re-audit", key=f"inp_s2_remark_{selected_id}")
+                b_r1, b_r2 = st.columns([1, 1])
+                with b_r1:
+                    if st.button("💾 Save Revised Decision", key=f"btn_save_s2_rev_{selected_id}", type="primary", use_container_width=True):
+                        fraud_data.revise_auditor_decision(selected_id, new_choice, new_notes, rev_remark)
+                        st.session_state[rev_key] = False
+                        st.toast(f"Decision for {target_label_disp} updated to {new_choice}!", icon="✅")
+                        st.rerun()
+                with b_r2:
+                    if st.button("Cancel", key=f"btn_cancel_s2_rev_{selected_id}", use_container_width=True):
+                        st.session_state[rev_key] = False
+                        st.rerun()
+
+        else:
+            st.html(textwrap.dedent(f"""
+            <div class="human-decision-panel">
+                <div class="human-decision-title">
+                    🏦 Authorised Bank Authorizer Decision Required — {target_label_disp}
+                </div>
+                <div style="font-size:12px;color:#92400e;margin-bottom:8px;">
+                    Risk Score: <b>{pred_score}/100</b> — Review this transaction and record an authoritative compliance verdict.
+                </div>
+            </div>
+            """))
+
+            d_c1, d_c2 = st.columns([1, 1.2])
+            with d_c1:
+                choice = st.radio(
+                    "**Authorizer Decision**",
+                    ["Approve", "Reject", "Escalate"],
+                    index=1 if pred_risk in ["High", "Medium"] else 0,
+                    format_func=lambda c: "✅ Approve (Legitimate)" if c == "Approve" else ("🚫 Reject (Laundering / Block)" if c == "Reject" else "⚠️ Escalate (Senior Review / SAR)"),
+                    key=f"radio_pred_{selected_id}"
+                )
+            with d_c2:
+                notes = st.text_area(
+                    "**Authorizer Feedback Notes**",
+                    placeholder="State verified counterparty rationale, KYC validation, or structuring/fan-out justification...",
+                    key=f"note_pred_{selected_id}",
+                    height=120
+                )
+
+            if st.button(f"📋 Submit Decision for {target_label_disp}", type="primary", use_container_width=True, key=f"btn_sub_{selected_id}"):
+                fraud_data.submit_auditor_decision(selected_id, choice, notes, target_type="group" if selected_id.startswith("GROUP-") else "transaction")
+                st.toast(f"Decision saved for {target_label_disp} ({choice})!", icon="✅")
+                st.rerun()
+
+    # ════════════════════════════════════════════════════════════════════
+    #  RIGHT PANEL — Customer Behavioral Profiling (Identical to Dashboard)
+    # ════════════════════════════════════════════════════════════════════
+    with col_s2_right:
+        sub_tx = st.session_state.get("s2_selected_sub_tx")
+        if sub_tx is None or (fan_rows and sub_tx.get("account") not in [r.get("account") for r in fan_rows]):
+            sub_tx = fan_rows[0] if fan_rows else {
+                "account": sender_acc,
+                "to_account": sender_acc,
+                "is_source": True,
+                "to_entity_name": sender_name,
+                "to_bank_name": src_meta.get("bank_name", "Global Bank"),
+                "to_bank_id": src_meta.get("bank_id", "BNK-001"),
+                "to_entity_id": src_meta.get("entity_id", f"ENT-{sender_acc[:8]}"),
+                "payment_format": pay_fmt,
+                "gat_signal": pred_risk.upper(),
+                "amount": amt_disp,
+            }
+
+        acc_num = sub_tx.get("account") or sub_tx.get("to_account", sender_acc)
+        is_src = sub_tx.get("is_source", True)
+        profile_label = "Source Sender Profile" if is_src else "Receiver Profile"
+
+        try:
+            profile = fraud_data.get_customer_profile(acc_num)
+        except Exception:
+            profile = {}
+        if not isinstance(profile, dict):
+            profile = {}
+
+        profile_name = profile.get("name") if profile.get("name") not in ("—", "Unknown", None, "") else sub_tx.get("to_entity_name", acc_num)
+        bank_name = profile.get("bank_name") if profile.get("bank_name") not in ("—", None, "") else sub_tx.get("to_bank_name", "Global Bank")
+        bank_id = profile.get("bank_id") if profile.get("bank_id") not in ("—", None, "") else sub_tx.get("to_bank_id", "BNK-001")
+        entity_id = profile.get("entity_id") if profile.get("entity_id") not in ("—", None, "") else sub_tx.get("to_entity_id", "ENT-001")
+        tot_inc = profile.get("total_incoming") if profile.get("total_incoming") not in ("—", None, "") else sub_tx.get("amount", "$0.00")
+        tot_out = profile.get("total_outgoing", "—")
+        avg_in = profile.get("avg_incoming_amount", "—")
+        avg_out = profile.get("avg_outgoing_amount", "—")
+        max_in = profile.get("max_incoming_amount", "—")
+        max_out = profile.get("max_outgoing_amount", "—")
+        in_tx = profile.get("previous_incoming", "—")
+        out_tx = profile.get("previous_outgoing", "—")
+        uniq_snds = profile.get("unique_senders", "—")
+        uniq_recs = profile.get("unique_receivers", "—")
+        tot_deg = profile.get("total_degree", "—")
+        net_flow = profile.get("net_flow", "—")
+
+        risk_tier = profile.get("risk_tier", f"{pred_risk} Risk")
+        tier_color = "#dc2626" if "High" in risk_tier else ("#d97706" if "Medium" in risk_tier else "#16a34a")
+        payment_fmt = str(sub_tx.get("payment_format", pay_fmt))
+
+        beh_rows = [
+            ("Total Incoming Amount", tot_inc),
+            ("Average Incoming Amount", avg_in),
+            ("Maximum Incoming Amount", max_in),
+            ("Incoming Transactions", str(in_tx)),
+            ("Unique Senders", str(uniq_snds)),
+            ("Total Outgoing Amount", tot_out),
+            ("Average Outgoing Amount", avg_out),
+            ("Maximum Outgoing Amount", max_out),
+            ("Outgoing Transactions", str(out_tx)),
+            ("Unique Receivers", str(uniq_recs)),
+            ("Total Degree", str(tot_deg)),
+            ("Net Flow", net_flow),
+        ]
+        beh_rows_html = "".join([f"<tr><td><b>{r[0]}</b></td><td style='text-align:right;'>{r[1]}</td></tr>" for r in beh_rows if r[1] != "—" and r[1] != ""])
+
+        st.html(textwrap.dedent(f"""
+        <div class="profile-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
+                <div>
+                    <div class="section-label">{profile_label}</div>
+                    <div style="font-size:16px;font-weight:800;color:#0f172a;">{profile_name}</div>
+                    <div style="font-size:12px;color:#64748b;margin-top:2px;">Account: <b>{acc_num}</b></div>
+                </div>
+                <div style="text-align:right;">
+                    <span style="background:{tier_color}20;color:{tier_color};border:1px solid {tier_color}44;
+                                 padding:3px 10px;border-radius:6px;font-size:11px;font-weight:700;">
+                        {risk_tier}
+                    </span>
+                </div>
+            </div>
+
+            <div class="profile-metric-grid">
+                <div class="profile-metric-card">
+                    <div class="profile-metric-label">Bank Name</div>
+                    <div class="profile-metric-val" style="font-size:12px;">{bank_name}</div>
+                </div>
+                <div class="profile-metric-card">
+                    <div class="profile-metric-label">Bank ID</div>
+                    <div class="profile-metric-val">{bank_id}</div>
+                </div>
+                <div class="profile-metric-card">
+                    <div class="profile-metric-label">Entity ID</div>
+                    <div class="profile-metric-val">{entity_id}</div>
+                </div>
+                <div class="profile-metric-card">
+                    <div class="profile-metric-label">Payment Format</div>
+                    <div class="profile-metric-val" style="font-size:12px;">{payment_fmt}</div>
+                </div>
+            </div>
+
+            <div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px;">Financial Summary</div>
+            <table class="custom-table">
+                <tbody>
+                    {beh_rows_html}
+                </tbody>
+            </table>
+        </div>
+        """))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTHORIZER DECISIONS PAGE
+# ══════════════════════════════════════════════════════════════════════════════
+elif page in ["Decisions", "Reviewed Transactions", "Authorizer Decisions"]:
+    st.html(textwrap.dedent("""
+    <div>
+        <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0;">🏦 Authorizer Decisions & Audit History</h2>
+        <div style="font-size:13px;color:#64748b;margin-top:2px;">
+            Full compliance ledger of all decisions rendered by the bank authorizer. Review notes, inspect approval/rejection trails, and revise decisions if needed.
+        </div>
+    </div>
+    <br>
+    """))
+
+    all_decs = fraud_data.get_all_auditor_decisions()
+    if not all_decs:
+        st.info("No authorizer decisions have been submitted yet. Review predictions on Screen 2 or the main Dashboard to submit decisions.")
+    else:
+        tot_d = len(all_decs)
+        app_d = sum(1 for d in all_decs if "Approve" in str(d.get("decision", "")))
+        rej_d = sum(1 for d in all_decs if "Reject" in str(d.get("decision", "")))
+        esc_d = sum(1 for d in all_decs if "Escalate" in str(d.get("decision", "")))
+        rev_d = sum(1 for d in all_decs if d.get("is_revised", False))
+
+        col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
+        with col_k1:
+            st.metric("Total Decisions Rendered", f"{tot_d}")
+        with col_k2:
+            st.metric("Approved (Label 0)", f"{app_d}")
+        with col_k3:
+            st.metric("Rejected (Label 1)", f"{rej_d}")
+        with col_k4:
+            st.metric("Escalated (Label 1)", f"{esc_d}")
+        with col_k5:
+            st.metric("Revised Decisions", f"{rev_d}")
+
+        filter_choice = st.pills("Filter Decisions", ["All", "Approved", "Rejected", "Escalated", "Revised"], default="All")
+
+        filtered = all_decs
+        if filter_choice == "Approved":
+            filtered = [d for d in all_decs if "Approve" in str(d.get("decision", ""))]
+        elif filter_choice == "Rejected":
+            filtered = [d for d in all_decs if "Reject" in str(d.get("decision", ""))]
+        elif filter_choice == "Escalated":
+            filtered = [d for d in all_decs if "Escalate" in str(d.get("decision", ""))]
+        elif filter_choice == "Revised":
+            filtered = [d for d in all_decs if d.get("is_revised", False)]
+
+        # Inline Revision Card if a target is chosen for revision
+        if st.session_state.revision_target_id:
+            rev_target = st.session_state.revision_target_id
+            target_data = next((d for d in all_decs if d["target_id"] == rev_target), None)
+            if target_data:
+                st.markdown("---")
+                st.html(f"""
+                <div style="background:#f0f9ff;border:2px solid #38bdf8;border-radius:10px;padding:16px;margin-bottom:14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div style="font-size:15px;font-weight:800;color:#0369a1;">✏️ Revise Authorizer Decision: {rev_target}</div>
+                        <span style="font-size:11px;color:#0284c7;font-weight:600;">Current Decision: {target_data.get('decision')} (Label {target_data.get('training_label', 0)})</span>
+                    </div>
+                    <div style="font-size:12px;color:#334155;margin-top:4px;">
+                        Adjust the verdict, update compliance notes, and provide revision justification. The training label will update accordingly.
+                    </div>
+                </div>
+                """)
+
+                c_rev1, c_rev2 = st.columns([1, 1])
+                with c_rev1:
+                    cur_d_str = str(target_data.get("decision", ""))
+                    idx_choice = 0 if "Approve" in cur_d_str else (2 if "Escalate" in cur_d_str else 1)
+                    new_choice = st.radio(
+                        "New Authorizer Verdict",
+                        ["Approve", "Reject", "Escalate"],
+                        index=idx_choice,
+                        format_func=lambda c: "✅ Approve (Legitimate)" if c == "Approve" else ("🚫 Reject (Laundering / Block)" if c == "Reject" else "⚠️ Escalate (Senior Review / SAR)"),
+                        key="radio_rev_choice"
+                    )
+                    rev_remark = st.text_input(
+                        "Revision Justification Remarks",
+                        placeholder="e.g., Mistakenly approved earlier; secondary review of fan-out cluster confirmed laundering.",
+                        key="input_rev_remark"
+                    )
+                with c_rev2:
+                    new_notes = st.text_area(
+                        "Updated Authorizer Notes",
+                        value=target_data.get("notes", ""),
+                        key="area_rev_notes",
+                        height=120
+                    )
+
+                btn_c1, btn_c2 = st.columns([1, 1])
+                with btn_c1:
+                    if st.button("💾 Save Revised Decision", type="primary", use_container_width=True):
+                        fraud_data.revise_auditor_decision(rev_target, new_choice, new_notes, rev_remark)
+                        st.session_state.revision_target_id = None
+                        st.toast(f"Decision for {rev_target} successfully revised!", icon="🔄")
+                        st.rerun()
+                with btn_c2:
+                    if st.button("Cancel Revision", use_container_width=True):
+                        st.session_state.revision_target_id = None
+                        st.rerun()
+                st.markdown("---")
+
+        # Decisions Card List
+        for d in filtered:
+            t_id = d.get("target_id", "—")
+            dec_str = d.get("decision", "—")
+            is_app = "Approve" in dec_str
+            is_esc = "Escalate" in dec_str
+            t_label = d.get("training_label", 0 if is_app else 1)
+            b_class = "badge-approved" if is_app else ("badge-medium" if is_esc else "badge-blocked")
+            is_rev = d.get("is_revised", False)
+            rev_badge = '<span class="badge-revised">REVISED DECISION</span>' if is_rev else ''
+
+            with st.container():
+                st.html(f"""
+                <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 18px;margin-bottom:10px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <span style="font-size:14px;font-weight:800;color:#0f172a;">{t_id}</span>
+                            <span style="font-size:11.5px;color:#475569;margin-left:8px;">GAT Probability: <b>{format_probability(d.get('gat_prob', 0.046942))}</b> · Risk Level: <b>{d.get('risk_level', 'High')}</b> · Amount: <b>{d.get('amount', '—')}</b></span>
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;">Training Label: {t_label}</span>
+                            {rev_badge}
+                            <span class="{b_class}">HUMAN DECISION: {dec_str.upper()}</span>
+                        </div>
+                    </div>
+                    <div style="font-size:12px;color:#334155;margin-top:6px;background:#f8fafc;padding:8px 12px;border-radius:6px;border-left:3px solid #cbd5e1;">
+                        <b>Remarks:</b> {d.get('remarks') or d.get('notes') or '(No remarks provided)'}
+                    </div>
+                    {f'<div style="font-size:11.5px;color:#2563eb;margin-top:4px;"><b>Revision Remarks:</b> {d.get("revision_remark")}</div>' if is_rev and d.get("revision_remark") else ''}
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+                        <span style="font-size:11px;color:#94a3b8;">🕒 Decision Timestamp: {d.get('timestamp', '—')}</span>
+                    </div>
+                </div>
+                """)
+                if st.button(f"✏️ Revise Decision for {t_id}", key=f"btn_rev_{t_id}"):
+                    st.session_state.revision_target_id = t_id
+                    st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  OVERNIGHT RETRAINING PAGE
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Overnight Retraining":
+    st.html(textwrap.dedent("""
+    <div>
+        <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0;">🌙 Overnight Model Retraining Pipeline</h2>
+        <div style="font-size:13px;color:#64748b;margin-top:2px;">
+            Human-in-the-Loop Continuous Learning: The Graph Attention Network (GAT) incorporates human bank authorizer decisions through a scheduled overnight fine-tuning pipeline.
+        </div>
+    </div>
+    <br>
+    """))
+
+    st.html("""
+    <div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:14px 18px;margin-bottom:16px;">
+        <div style="font-size:13px;font-weight:700;color:#1e40af;">📌 Mentor Architecture Overview: Overnight Retraining</div>
+        <div style="font-size:12px;color:#1e3a8a;margin-top:4px;line-height:1.6;">
+            1. Predictions are generated on transactions (Screen 2).<br>
+            2. Authorised bank compliance officers review flagged and benign transactions and record authoritative ground-truth verdicts.<br>
+            3. Overnight, this batch fine-tunes the PyTorch Geometric GAT model using <code>BCEWithLogitsLoss</code> and Adam optimization.<br>
+            4. The fine-tuned weights are saved to <code>backend/GAT/gat_aml_retrained.pt</code> and deployed for enhanced precision.
+        </div>
+    </div>
+    """)
+
+    sched_info = fraud_data.get_scheduler_status()
+    st.html(f"""
+    <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:12px 18px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+            <div style="font-size:12px;font-weight:700;color:#0f172a;">⏰ APScheduler Overnight Automation Daemon</div>
+            <div style="font-size:11.5px;color:#64748b;margin-top:2px;">
+                Engine Status: <b style="color:#059669;">{sched_info.get('status')}</b> &nbsp;|&nbsp; Schedule: <b>{sched_info.get('schedule')}</b> &nbsp;|&nbsp; Next Scheduled Run: <b>{sched_info.get('next_run')}</b>
+            </div>
+        </div>
+        <div style="font-size:11px;background:#e0f2fe;color:#0369a1;padding:4px 10px;border-radius:6px;font-weight:600;">
+            CRON: 02:00 AM DAILY
+        </div>
+    </div>
+    """)
+
+    all_decs = fraud_data.get_all_auditor_decisions()
+    tot_samples = len(all_decs)
+    app_cnt = sum(1 for d in all_decs if "Approve" in str(d.get("decision", "")))
+    fraud_cnt = sum(1 for d in all_decs if "Block" in str(d.get("decision", "")) or "Laundering" in str(d.get("decision", "")))
+
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        st.metric("Audited Training Samples", f"{tot_samples}")
+    with col_s2:
+        st.metric("Legitimate Samples (y=0)", f"{app_cnt}")
+    with col_s3:
+        st.metric("Laundering Samples (y=1)", f"{fraud_cnt}")
+    with col_s4:
+        retrained_exists = os.path.exists(fraud_data.RETRAINED_GAT_PATH)
+        st.metric("Model Checkpoint", "Retrained Active" if retrained_exists else "Base Checkpoint")
+
+    st.write("")
+    col_r1, col_r2 = st.columns([2, 1])
+    with col_r1:
+        epochs_sel = st.slider("Overnight Retraining Epochs", min_value=3, max_value=15, value=8)
+    with col_r2:
+        lr_sel = st.selectbox("Fine-Tuning Learning Rate", [0.0005, 0.001, 0.002], index=1)
+
+    if st.button("🌙 Run Overnight Retraining Batch", type="primary", use_container_width=True):
+        with st.spinner("Executing overnight batch fine-tuning on PyG Graph Attention Network..."):
+            report = fraud_data.run_overnight_retraining(epochs=epochs_sel, lr=lr_sel)
+            st.session_state.retrain_result = report
+            if report.get("status") == "success":
+                st.toast("🎉 Overnight Retraining completed successfully!", icon="✅")
+            else:
+                st.toast(report.get("message", "Error in retraining"), icon="⚠️")
+            st.rerun()
+
+    report = st.session_state.get("retrain_result")
+    if not report:
+        past_hist = fraud_data.get_retraining_history()
+        if past_hist:
+            report = past_hist[-1]
+
+    if report and report.get("status") == "success":
+        st.markdown("---")
+        st.markdown("### 📊 Retraining Results & Metric Comparison")
+
+        pre_l = report["pre_loss"]
+        post_l = report["post_loss"]
+        pre_a = report["pre_accuracy"]
+        post_a = report["post_accuracy"]
+        pre_p = report["pre_precision"]
+        post_p = report["post_precision"]
+        pre_r = report["pre_recall"]
+        post_r = report["post_recall"]
+
+        delta_l = round(post_l - pre_l, 4)
+        delta_a = round(post_a - pre_a, 1)
+        delta_p = round(post_p - pre_p, 1)
+        delta_r = round(post_r - pre_r, 1)
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("BCE Training Loss", f"{post_l:.4f}", f"{delta_l:.4f}", delta_color="inverse")
+        with m2:
+            st.metric("Model Accuracy", f"{post_a:.1f}%", f"{delta_a:+.1f}%")
+        with m3:
+            st.metric("Model Precision", f"{post_p:.1f}%", f"{delta_p:+.1f}%")
+        with m4:
+            st.metric("Model Recall", f"{post_r:.1f}%", f"{delta_r:+.1f}%")
+
+        loss_hist = report.get("loss_history", [])
+        if loss_hist:
+            fig_loss = go.Figure()
+            fig_loss.add_trace(go.Scatter(
+                x=list(range(1, len(loss_hist) + 1)),
+                y=loss_hist,
+                mode="lines+markers",
+                line=dict(color="#2563eb", width=3),
+                marker=dict(size=8, color="#1e40af"),
+                name="BCE Loss"
+            ))
+            fig_loss.update_layout(
+                title="<b>Overnight Fine-Tuning Convergence (Loss vs. Epoch)</b>",
+                xaxis_title="Training Epoch",
+                yaxis_title="BCE With Logits Loss",
+                template="plotly_white",
+                height=320,
+                margin=dict(l=40, r=40, t=40, b=40)
+            )
+            st.plotly_chart(fig_loss, use_container_width=True)
+
+        st.markdown("#### Before vs. After Retraining Metrics")
+        df_comp = pd.DataFrame([
+            {"Metric": "BCE Loss", "Before Retraining (Base GAT)": f"{pre_l:.4f}", "After Overnight Retraining": f"{post_l:.4f}", "Improvement": f"{delta_l:.4f} (Loss Reduced)"},
+            {"Metric": "Accuracy", "Before Retraining (Base GAT)": f"{pre_a:.1f}%", "After Overnight Retraining": f"{post_a:.1f}%", "Improvement": f"{delta_a:+.1f}%"},
+            {"Metric": "Precision", "Before Retraining (Base GAT)": f"{pre_p:.1f}%", "After Overnight Retraining": f"{post_p:.1f}%", "Improvement": f"{delta_p:+.1f}%"},
+            {"Metric": "Recall", "Before Retraining (Base GAT)": f"{pre_r:.1f}%", "After Overnight Retraining": f"{post_r:.1f}%", "Improvement": f"{delta_r:+.1f}%"},
+        ])
+        st.dataframe(df_comp, use_container_width=True, hide_index=True)
+
+        st.html(f"""
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 16px;margin-top:12px;">
+            <div style="font-size:12.5px;font-weight:700;color:#166534;">
+                ✅ GAT Model Successfully Retrained and Deployed
+            </div>
+            <div style="font-size:11.5px;color:#14532d;margin-top:2px;">
+                Trained on <b>{report.get('total_samples')} human-verified cases</b> ({report.get('approved_count')} approved, {report.get('fraud_count')} laundering). Checkpoint saved at <code>{report.get('model_path')}</code>.
+            </div>
+        </div>
+        """)
+
+    # GAT Model Version Registry Section
+    st.markdown("---")
+    st.markdown("### 🏷️ GAT Model Version Registry & Artifact Lineage")
+    reg_data = fraud_data.get_model_registry()
+    if reg_data and "models" in reg_data:
+        reg_rows = []
+        for m in reg_data.get("models", []):
+            mets = m.get("metrics") or {}
+            perf_summary = f"Loss: {mets.get('training_loss_final', '—')} | Acc: {mets.get('accuracy', '—')}%" if mets else "Base Pretrained (10M Tx)"
+            reg_rows.append({
+                "Version": m.get("version"),
+                "Model Type": m.get("model_type"),
+                "Weights File": m.get("weights_file"),
+                "Status": m.get("status"),
+                "Training Source": m.get("training_source"),
+                "Performance": perf_summary,
+                "Registered At": m.get("created_at"),
+            })
+        st.dataframe(pd.DataFrame(reg_rows), use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  GRAPH NETWORK PAGE
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Graph Network":
@@ -900,7 +1924,7 @@ if st.session_state.get("is_streaming", False):
         st.rerun()
     else:
         st.session_state.is_streaming = False
-        st.toast("🎉 Live Streaming Completed! All 100 transactions processed.", icon="✅")
+        st.toast(f"🎉 Streaming Completed! All {status_now['total_txs']} transactions processed.", icon="✅")
         st.rerun()
 
 

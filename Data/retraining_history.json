@@ -1,0 +1,71 @@
+[
+  {
+    "status": "success",
+    "timestamp": "30 Sep 2026, 11:00 PM",
+    "total_samples": 13,
+    "approved_count": 0,
+    "fraud_count": 13,
+    "epochs": 8,
+    "loss_history": [
+      2.8684,
+      0.0109,
+      0.0006,
+      0.0002,
+      0.0002,
+      0.0002,
+      0.0005,
+      0.0002
+    ],
+    "pre_loss": 11.3616,
+    "post_loss": 0.0001,
+    "pre_accuracy": 0.0,
+    "post_accuracy": 100.0,
+    "pre_precision": 0.0,
+    "post_precision": 100.0,
+    "pre_recall": 0.0,
+    "post_recall": 100.0,
+    "model_path": "C:\\Users\\Pooja\\Downloads\\Frauddetection\\backend\\GAT\\gat_aml_retrained.pt"
+  },
+  {
+    "status": "success",
+    "timestamp": "30 Sep 2026, 11:27 PM",
+    "total_samples": 1,
+    "approved_count": 0,
+    "fraud_count": 1,
+    "epochs": 2,
+    "loss_history": [
+      9.4357,
+      12.2472
+    ],
+    "pre_loss": 11.0595,
+    "post_loss": 9.723,
+    "pre_accuracy": 0.0,
+    "post_accuracy": 0.0,
+    "pre_precision": 0.0,
+    "post_precision": 0.0,
+    "pre_recall": 0.0,
+    "post_recall": 0.0,
+    "model_path": "C:\\Users\\Pooja\\Downloads\\Frauddetection\\backend\\GAT\\gat_aml_retrained.pt"
+  },
+  {
+    "status": "success",
+    "timestamp": "30 Sep 2026, 11:31 PM",
+    "total_samples": 1,
+    "approved_count": 0,
+    "fraud_count": 1,
+    "epochs": 2,
+    "loss_history": [
+      11.4163,
+      11.4188
+    ],
+    "pre_loss": 9.723,
+    "post_loss": 8.3817,
+    "pre_accuracy": 0.0,
+    "post_accuracy": 0.0,
+    "pre_precision": 0.0,
+    "post_precision": 0.0,
+    "pre_recall": 0.0,
+    "post_recall": 0.0,
+    "model_path": "C:\\Users\\Pooja\\Downloads\\Frauddetection\\backend\\GAT\\gat_aml_retrained.pt"
+  }
+]
