@@ -21,8 +21,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
+from torch_geometric.data import Data
 from sklearn.preprocessing import StandardScaler
 from huggingface_hub import hf_hub_download
+from supabase_client import supabase_mgr
+import database
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "Data")
@@ -256,15 +259,7 @@ class RealTimeStreamingEngine:
             except Exception:
                 pass
 
-        self.auditor_decisions = {}
-        if os.path.exists(AUDITOR_DECISIONS_JSON_PATH):
-            try:
-                with open(AUDITOR_DECISIONS_JSON_PATH, "r", encoding="utf-8") as f:
-                    decs = json.load(f)
-                if isinstance(decs, dict):
-                    self.auditor_decisions = decs
-            except Exception:
-                pass
+        self.auditor_decisions = supabase_mgr.load_decisions()
 
         # Backfill any decisions with missing amount or receivers only if decisions exist
         if self.auditor_decisions:
@@ -300,12 +295,9 @@ class RealTimeStreamingEngine:
                     }
         print(f"Loaded {len(self.acc_meta)} account profiles.")
 
-        # 2. Transactions (prefer testing_data.csv without laundering)
-        trans_file = os.path.join(DATA_DIR, "testing_data.csv")
-        if not os.path.exists(trans_file):
-            trans_file = os.path.join(DATA_DIR, "testing_trans.csv")
-        if os.path.exists(trans_file):
-            df_t = pd.read_csv(trans_file)
+        # 2. Transactions (prefer Supabase PostgreSQL table, fallback to local testing_trans.csv)
+        df_t = database.get_transactions()
+        if df_t is not None and not df_t.empty:
             # Strictly ensure NO laundering column is present or used
             if "Is Laundering" in df_t.columns:
                 df_t = df_t.drop(columns=["Is Laundering"])
@@ -317,7 +309,7 @@ class RealTimeStreamingEngine:
                 df_t["To Account"] = df_t["Account.1"]
             df_t["Timestamp"] = pd.to_datetime(df_t["Timestamp"], errors="coerce")
             self.df_trans = df_t.sort_values("Timestamp").reset_index(drop=True)
-            print(f"Loaded {len(self.df_trans)} testing transactions from {os.path.basename(trans_file)} without laundering column.")
+            print(f"Loaded {len(self.df_trans)} testing transactions (Supabase/Local fallback) without laundering column.")
 
     def _init_scalers(self):
         """Fit feature scalers accurately on dataset distributions."""
@@ -644,7 +636,28 @@ class RealTimeStreamingEngine:
             risk_score = 0
             is_fanout = False
         else:
-            # 1. Extract 1-hop dynamic ego subgraph around sender and receiver from the graph accumulated so far
+            # 1. Dynamically retrieve historical context from Supabase PostgreSQL for ego-network reconstruction
+            try:
+                hist_txs = database.get_historical_transactions([from_acc, to_acc], before_timestamp=str(ts))
+                for h in hist_txs:
+                    u = h["from_account"]
+                    v = h["to_account"]
+                    if u and v and (not self.G.has_edge(u, v) or h.get("tx_id") not in self.G[u][v]):
+                        h_amt = float(h.get("amount", 0.0))
+                        h_curr = h.get("currency", "US Dollar")
+                        h_fmt = h.get("payment_format", "Wire")
+                        h_edge_raw = self._compute_edge_feature_vec(h_amt, h_curr, h_fmt)
+                        if not self.G.has_node(u):
+                            self.G.add_node(u, **self.get_account_meta(u), role="source")
+                        if not self.G.has_node(v):
+                            self.G.add_node(v, **self.get_account_meta(v), role="receiver")
+                        self.G.add_edge(u, v, key=h.get("tx_id", f"H-{u}-{v}"), amount_usd=h_amt, raw_amount=h_amt,
+                                        currency=h_curr, format=h_fmt, timestamp=h.get("timestamp", ""),
+                                        edge_raw=h_edge_raw)
+            except Exception as e:
+                pass
+
+            # 2. Extract 1-hop dynamic ego subgraph around sender and receiver from the graph accumulated so far
             neighbor_nodes = set([from_acc, to_acc])
             if self.G.has_node(from_acc):
                 neighbor_nodes.update(self.G.successors(from_acc))
@@ -660,14 +673,14 @@ class RealTimeStreamingEngine:
                     node_order.append(n)
             node_to_idx = {n: i for i, n in enumerate(node_order)}
 
-            # 2. Extract and scale node features for all nodes in this dynamic neighborhood
+            # 3. Extract and scale node features for all nodes in this dynamic neighborhood
             node_feats = np.stack([self._compute_node_feature_vec(n) for n in node_order])
             try:
                 scaled_nodes = self.node_scaler.transform(node_feats)
             except Exception:
                 scaled_nodes = node_feats
 
-            # 3. Extract and scale all active directed edges formed so far in this neighborhood
+            # 4. Extract and scale all active directed edges formed so far in this neighborhood
             src_edges = []
             dst_edges = []
             edge_feats = []
@@ -692,16 +705,18 @@ class RealTimeStreamingEngine:
                 scaled_edges = np.array(edge_feats, dtype=np.float32)
                 scaled_target_edge = edge_raw
 
-            # 4. Formulate PyTorch Geometric Tensors
+            # 5. Formulate PyTorch Geometric Data object dynamically in RAM (temporary in-memory representation)
             x_tensor = torch.tensor(scaled_nodes, dtype=torch.float32).to(self.device)
             msg_edge_index = torch.tensor([src_edges, dst_edges], dtype=torch.long).to(self.device)
             msg_edge_attr = torch.tensor(scaled_edges, dtype=torch.float32).to(self.device)
             target_edge_index = torch.tensor([[0], [1]], dtype=torch.long).to(self.device)
             target_edge_attr = torch.tensor(scaled_target_edge, dtype=torch.float32).unsqueeze(0).to(self.device)
 
-            # 5. Execute Pure GAT Forward Pass
+            pyg_data = Data(x=x_tensor, edge_index=msg_edge_index, edge_attr=msg_edge_attr)
+
+            # 6. Execute Pure GAT Forward Pass using PyG Data object
             with torch.no_grad():
-                logit = self.model(x_tensor, msg_edge_index, msg_edge_attr, target_edge_index, target_edge_attr)
+                logit = self.model(pyg_data.x, pyg_data.edge_index, pyg_data.edge_attr, target_edge_index, target_edge_attr)
                 raw_logit = float(logit.item() if logit.numel() == 1 else logit[0].item())
                 gat_prob = float(torch.sigmoid(torch.tensor(raw_logit)).item())
 
@@ -747,6 +762,10 @@ class RealTimeStreamingEngine:
             "retroactive_reason": "",
         }
         self.processed_txs.append(tx_record)
+        try:
+            database.save_prediction(tx_record)
+        except Exception:
+            pass
 
         # Cache the graph tensors for fast, exact retraining
         if self.model is not None:
@@ -1042,6 +1061,7 @@ class RealTimeStreamingEngine:
         self._ensure_subgraph_in_cache(target_key)
         self._save_auditor_decisions_to_disk()
         self._save_state_to_disk()
+        supabase_mgr.save_decision(rec)
 
     def revise_auditor_decision(self, target_id: str, new_decision: str, new_notes: str, revision_remark: str = ""):
         target_key = str(target_id).strip()
@@ -1109,6 +1129,7 @@ class RealTimeStreamingEngine:
         self._ensure_subgraph_in_cache(target_key)
         self._save_auditor_decisions_to_disk()
         self._save_state_to_disk()
+        supabase_mgr.save_decision(self.auditor_decisions[target_key])
 
     def _ensure_subgraph_in_cache(self, target_id: str):
         if target_id in self.tx_subgraph_cache:
@@ -1400,10 +1421,13 @@ class RealTimeStreamingEngine:
         return inv
 
     def get_active_investigations(self) -> List[Dict[str, Any]]:
+        """Returns only unreviewed alerts. Any alert reviewed as Approve, Reject, or Escalate disappears from here."""
         active = []
         for inv_id, inv in self.investigations.items():
             aud_dec = self.auditor_decisions.get(inv_id)
-            if aud_dec and "APPROVE" in str(aud_dec.get("decision", "")).upper():
+            acc = inv.get("account")
+            # If this group or its account has been reviewed by the authorizer, it is resolved and disappears from Dashboard
+            if (aud_dec and aud_dec.get("decision")) or (acc and self.auditor_decisions.get(acc, {}).get("decision")):
                 continue
             active.append(self._clean_inv(inv))
         active.sort(key=lambda x: x.get("risk_score", 0), reverse=True)
@@ -1726,7 +1750,34 @@ class RealTimeStreamingEngine:
                 )
                 G_sub.add_edge(sender_acc, r_acc, amount=amt_str, raw_amount=tx.get("amount_paid", 0.0), currency=currency, hop=1)
 
-        # Fall back to df_trans dataset if no edges found in processed_txs
+        # Fall back to Supabase historical transactions & df_trans dataset
+        if not added_receivers:
+            try:
+                supa_hist = database.get_historical_transactions(sender_acc)
+                for h in supa_hist:
+                    r_acc = h.get("to_account")
+                    if r_acc and r_acc not in added_receivers and r_acc != sender_acc:
+                        added_receivers.add(r_acc)
+                        r_meta = self.get_account_meta(r_acc)
+                        amt = float(h.get("amount", 0.0))
+                        p_curr = h.get("currency", "US Dollar")
+                        amt_str = format_currency(amt, p_curr)
+                        G_sub.add_node(
+                            r_acc,
+                            node_type="target",
+                            label=f"Receiver\n{r_acc}",
+                            entity_name=r_meta["entity_name"],
+                            bank_name=r_meta["bank_name"],
+                            bank_id=r_meta["bank_id"],
+                            entity_id=r_meta["entity_id"],
+                            amount=amt_str,
+                            color="#f59e0b",
+                            hop=1
+                        )
+                        G_sub.add_edge(sender_acc, r_acc, amount=amt_str, raw_amount=amt, currency=p_curr, hop=1)
+            except Exception:
+                pass
+
         if not added_receivers and self.df_trans is not None and not self.df_trans.empty:
             acc_col = "Account" if "Account" in self.df_trans.columns else "From Account"
             to_col = "Account.1" if "Account.1" in self.df_trans.columns else "To Account"
@@ -1948,3 +1999,12 @@ def get_scheduler_status() -> Dict[str, Any]:
 
 def trigger_scheduled_retraining_now():
     return _engine.run_overnight_retraining()
+
+def get_supabase_status() -> Dict[str, Any]:
+    return supabase_mgr.get_status()
+
+def sync_transactions_to_supabase():
+    return supabase_mgr.sync_csv_to_supabase()
+
+def get_historical_transactions(accounts, before_timestamp=None, window_hours=None):
+    return database.get_historical_transactions(accounts, before_timestamp=before_timestamp, window_hours=window_hours)

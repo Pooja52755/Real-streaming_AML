@@ -251,7 +251,7 @@ with st.sidebar:
 
     nav_options = [
         "Dashboard",
-        "Screen 2: Predictions & Feedback",
+        "Reviewed Transactions",
         "Decisions",
         "Graph Network"
     ]
@@ -799,7 +799,9 @@ if page == "Dashboard":
 
                 if st.button(f"📋 Submit Decision for Group {gid}", key=f"submit_{tx_key}", type="primary", use_container_width=True):
                     fraud_data.submit_auditor_decision(tx_key, decision, notes, target_type="group")
-                    st.toast(f"Decision for Group {gid} saved ({decision})!", icon="✅")
+                    st.session_state.selected_tx_id = None
+                    st.session_state.selected_sub_tx = None
+                    st.toast(f"Decision for Group {gid} saved ({decision})! Alert resolved and moved to Reviewed Transactions.", icon="✅")
                     st.rerun()
 
             st.html(textwrap.dedent("""
@@ -940,12 +942,12 @@ if page == "Dashboard":
 # ══════════════════════════════════════════════════════════════════════════════
 #  SCREEN 2: PREDICTIONS & HUMAN FEEDBACK
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "Screen 2: Predictions & Feedback":
+elif page in ["Reviewed Transactions", "Screen 2: Predictions & Feedback"]:
     st.html(textwrap.dedent("""
     <div>
-        <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0;">Screen 2: Transaction Predictions & Authorizer Feedback</h2>
+        <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0;">Reviewed Transactions</h2>
         <div style="font-size:13px;color:#64748b;margin-top:2px;">
-            Inspect neural GAT predictions across streaming transactions. Submit authoritative human decisions to power the overnight model retraining loop.
+            Full compliance record of all transactions and fan-out groups reviewed and adjudicated by the human authorizer. Submissions are synced persistently to Supabase PostgreSQL.
         </div>
     </div>
     <br>
@@ -964,61 +966,26 @@ elif page == "Screen 2: Predictions & Feedback":
             return all_decisions[from_account]
         return None
 
-    tot_processed = len(proc_txs)
     tot_reviewed = len(all_decisions_list)
-    high_preds = sum(1 for t in proc_txs if t.get("risk_tier") == "High")
-    pending = max(0, tot_processed - tot_reviewed) if tot_processed > 0 else 0
 
     # Top Metric Banner (Only Reviewed count kept as requested)
     col_k1, _ = st.columns([1, 3])
     with col_k1:
         st.metric("Reviewed Transactions", f"{tot_reviewed}")
 
-    # Authorizer Action Center (Real decisions, no fake seeding)
-    col_act1, col_act2 = st.columns([1.8, 1.2])
-    with col_act1:
-        st.caption("💡 **Authorizer Workflow:** Stream transactions using sidebar controls (e.g. 40-50 cases), review predictions in the stream below, submit human decisions, and trigger overnight retraining.")
-    with col_act2:
-        with st.expander("⚡ Batch Authorizer Actions", expanded=False):
-            batch_choice = st.selectbox(
-                "Authorizer Verdict",
-                ["Approve All Pending Low-Risk (Label: 0)", "Reject All Pending High-Risk (Label: 1)", "Escalate All Pending High-Risk (SAR / Senior Review)"],
-                key="batch_cat"
-            )
-            batch_note = st.text_input("Compliance Audit Note", value="Authorizer audit verification", key="batch_note_input")
-            if st.button("Apply Batch Decision", key="btn_apply_batch", type="secondary", use_container_width=True):
-                applied = 0
-                for t in proc_txs:
-                    t_id = t["tx_id"]
-                    if t_id not in all_decisions:
-                        tier = t.get("risk_tier", "Low")
-                        is_fo = t.get("is_fanout", False)
-                        if "Approve" in batch_choice and tier == "Low" and not is_fo:
-                            fraud_data.submit_auditor_decision(
-                                t_id, "Approve",
-                                f"{batch_note} — Verified legitimate commercial/personal transaction",
-                                target_type="transaction"
-                            )
-                            applied += 1
-                        elif "Reject" in batch_choice and (tier in ["High", "Medium"] or is_fo):
-                            fraud_data.submit_auditor_decision(
-                                t_id, "Reject",
-                                f"{batch_note} — Confirmed suspicious dispersion / structuring pattern",
-                                target_type="transaction"
-                            )
-                            applied += 1
-                        elif "Escalate" in batch_choice and (tier in ["High", "Medium"] or is_fo):
-                            fraud_data.submit_auditor_decision(
-                                t_id, "Escalate",
-                                f"{batch_note} — Escalated for senior AML audit / SAR filing",
-                                target_type="transaction"
-                            )
-                            applied += 1
-                if applied > 0:
-                    st.toast(f"Saved {applied} real authorizer decisions!", icon="✅")
-                    st.rerun()
-                else:
-                    st.toast("No matching pending transactions found for this filter.", icon="ℹ️")
+    if tot_reviewed == 0:
+        st.html("""
+        <div style="background:#ffffff;border:1.5px dashed #cbd5e1;border-radius:12px;padding:48px 24px;text-align:center;margin-top:16px;">
+            <div style="font-size:42px;margin-bottom:12px;">🛡️</div>
+            <div style="font-size:18px;font-weight:800;color:#1e293b;">No Reviewed Transactions Yet</div>
+            <div style="font-size:13px;color:#64748b;max-width:580px;margin:8px auto 0 auto;line-height:1.6;">
+                You have not reviewed any transactions or groups yet.<br>
+                Go to the <b>Dashboard</b>, inspect active flagged alerts, and submit an <b>Approve</b> or <b>Reject</b> decision.<br>
+                Once reviewed, that transaction or fan-out group will disappear from the Dashboard and appear right here.
+            </div>
+        </div>
+        """)
+        st.stop()
 
     st.write("")
 
@@ -1029,137 +996,50 @@ elif page == "Screen 2: Predictions & Feedback":
     col_s2_left, col_s2_center, col_s2_right = st.columns([1.0, 1.8, 1.2])
 
     with col_s2_left:
-        # Toggle between Reviewed Decisions and Stream Predictions
-        if proc_txs and all_decisions_list:
-            s2_view = st.radio(
-                "Inspect Target:",
-                [f"📋 Reviewed Decisions ({tot_reviewed})", f"⚡ Streamed Predictions ({tot_processed})"],
-                horizontal=True,
-                key="s2_inspect_view_radio"
-            )
-        elif all_decisions_list:
-            s2_view = f"📋 Reviewed Decisions ({tot_reviewed})"
-            st.caption(f"⚖️ **Reviewed Audit Store** ({tot_reviewed} Cases)")
-        else:
-            s2_view = f"⚡ Streamed Predictions ({tot_processed})"
-            st.caption(f"⚡ **Stream Predictions** ({tot_processed} Ingested)")
+        st.html('<div class="section-label">Reviewed Cases Queue</div>')
 
-        st.html('<div class="section-label">Inspection Queue</div>')
+        valid_ids = [d["target_id"] for d in all_decisions_list]
+        if st.session_state.get("s2_selected_id") not in valid_ids:
+            st.session_state.s2_selected_id = valid_ids[0]
 
-        if "Reviewed" in s2_view:
-            if not all_decisions_list:
-                st.html("""
-                <div style="background:#ffffff;border:1px dashed #cbd5e1;border-radius:10px;padding:24px 16px;text-align:center;">
-                    <div style="font-size:24px;margin-bottom:8px;">ℹ️</div>
-                    <div style="font-size:13px;font-weight:700;color:#334155;">No authorizer decisions recorded yet.</div>
-                    <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Stream transactions via sidebar or submit decisions to review cases.</div>
-                </div>
-                """)
+        for d in all_decisions_list:
+            t_id = d.get("target_id", "—")
+            acc = d.get("account", "Unknown")
+            meta = fraud_data.get_account_meta(acc)
+            name = meta.get("entity_name", acc)
+            amt = d.get("amount", "—")
+            to_info = d.get("to_account", "—")
+            dec_val = d.get("decision", "Approve")
+            is_sel = (t_id == st.session_state.get("s2_selected_id"))
+
+            if dec_val == "Approve":
+                dec_pill = '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">✅ APPROVED</span>'
+            elif dec_val == "Reject":
+                dec_pill = '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">🚫 REJECTED</span>'
             else:
-                valid_ids = [d["target_id"] for d in all_decisions_list]
-                if st.session_state.get("s2_selected_id") not in valid_ids:
-                    st.session_state.s2_selected_id = valid_ids[0]
+                dec_pill = '<span style="background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">⚠️ ESCALATED</span>'
 
-                for d in all_decisions_list:
-                    t_id = d.get("target_id", "—")
-                    acc = d.get("account", "Unknown")
-                    meta = fraud_data.get_account_meta(acc)
-                    name = meta.get("entity_name", acc)
-                    amt = d.get("amount", "—")
-                    to_info = d.get("to_account", "—")
-                    dec_val = d.get("decision", "Approve")
-                    is_sel = (t_id == st.session_state.get("s2_selected_id"))
+            sel_bg = "#eff6ff" if is_sel else "#ffffff"
+            sel_border = "#93c5fd" if is_sel else "#e2e8f0"
 
-                    if dec_val == "Approve":
-                        dec_pill = '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">✅ APPROVED</span>'
-                    elif dec_val == "Reject":
-                        dec_pill = '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">🚫 REJECTED</span>'
-                    else:
-                        dec_pill = '<span style="background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">⚠️ ESCALATED</span>'
-
-                    sel_bg = "#eff6ff" if is_sel else "#ffffff"
-                    sel_border = "#93c5fd" if is_sel else "#e2e8f0"
-
-                    st.html(textwrap.dedent(f"""
-                    <div class="flagged-card" style="background:{sel_bg};border-color:{sel_border};margin-bottom:10px;">
-                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-                            <div>
-                                <div class="flagged-acc-id">Sender: {acc}</div>
-                                <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
-                            </div>
-                            {dec_pill}
-                        </div>
-                        <div class="flagged-pattern" style="margin-top:6px;">📌 Case {t_id} · Volume: <b>{amt}</b></div>
-                        <div style="font-size:10.5px;color:#64748b;margin-top:2px;">{to_info}</div>
+            st.html(textwrap.dedent(f"""
+            <div class="flagged-card" style="background:{sel_bg};border-color:{sel_border};margin-bottom:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                    <div>
+                        <div class="flagged-acc-id">Sender: {acc}</div>
+                        <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
                     </div>
-                    """))
-
-                    if st.button(f"Inspect Case {t_id} →", key=f"s2_btn_rev_{t_id}", use_container_width=True):
-                        st.session_state.s2_selected_id = t_id
-                        st.session_state.s2_selected_sub_tx = None
-                        st.rerun()
-
-        else:
-            # Streamed Predictions View
-            if not proc_txs:
-                st.html("""
-                <div style="background:#ffffff;border:1px dashed #cbd5e1;border-radius:10px;padding:24px 16px;text-align:center;">
-                    <div style="font-size:24px;margin-bottom:8px;">⏳</div>
-                    <div style="font-size:13px;font-weight:700;color:#334155;">No transactions streamed yet.</div>
-                    <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Click <b>'▶ Step +1'</b> or <b>'⏩ Step +10'</b> in the sidebar to stream transactions.</div>
+                    {dec_pill}
                 </div>
-                """)
-            else:
-                valid_ids = [t["tx_id"] for t in proc_txs]
-                if st.session_state.get("s2_selected_id") not in valid_ids:
-                    st.session_state.s2_selected_id = valid_ids[-1]
+                <div class="flagged-pattern" style="margin-top:6px;">📌 Case {t_id} · Volume: <b>{amt}</b></div>
+                <div style="font-size:10.5px;color:#64748b;margin-top:2px;">Counterparty: {to_info}</div>
+            </div>
+            """))
 
-                for t in reversed(proc_txs):
-                    t_id = t["tx_id"]
-                    acc = t.get("from_account", "—")
-                    meta = fraud_data.get_account_meta(acc)
-                    name = meta.get("entity_name", acc)
-                    risk = t.get("risk_tier", "Low")
-                    score = t.get("risk_score", 10)
-                    amt = t.get("amount_formatted", "$0.00")
-                    is_fo = t.get("is_fanout", False)
-                    is_sel = (t_id == st.session_state.get("s2_selected_id"))
-
-                    d_entry = get_decision_for_tx(t_id, acc)
-                    if d_entry:
-                        dec_val = d_entry.get("decision", "Approve")
-                        dec_pill = '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">✅ APPROVED</span>' if dec_val == "Approve" else ('<span style="background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">⚠️ ESCALATED</span>' if dec_val == "Escalate" else '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:800;">🚫 REJECTED</span>')
-                    else:
-                        dec_pill = f'<span class="badge-{risk.lower()}">{risk.upper()}</span>'
-
-                    sel_bg = "#eff6ff" if is_sel else "#ffffff"
-                    sel_border = "#93c5fd" if is_sel else "#e2e8f0"
-                    risk_color = "#ef4444" if risk == "High" else "#f59e0b" if risk == "Medium" else "#16a34a"
-                    bar_width = max(5, min(100, score))
-
-                    st.html(textwrap.dedent(f"""
-                    <div class="flagged-card flagged-card-{risk.lower()}" style="background:{sel_bg};border-color:{sel_border};margin-bottom:10px;">
-                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-                            <div>
-                                <div class="flagged-acc-id">Sender: {acc}</div>
-                                <div style="font-size:11px;color:#475569;font-weight:500;margin-top:1px;">{name}</div>
-                            </div>
-                            {dec_pill}
-                        </div>
-                        <div class="flagged-pattern" style="margin-top:4px;">TX #{t_id} · {amt} ({t.get('payment_format', 'Wire')})</div>
-                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
-                            <div class="risk-score-bar-bg" style="flex:1;margin-right:8px;">
-                                <div class="risk-score-bar-fill" style="width:{bar_width}%;background:{risk_color};"></div>
-                            </div>
-                            <span style="font-size:11px;font-weight:700;color:{risk_color};">{score}/100</span>
-                        </div>
-                    </div>
-                    """))
-
-                    if st.button(f"Inspect TX #{t_id} →", key=f"s2_btn_tx_{t_id}", use_container_width=True):
-                        st.session_state.s2_selected_id = t_id
-                        st.session_state.s2_selected_sub_tx = None
-                        st.rerun()
+            if st.button(f"Inspect Case {t_id} →", key=f"s2_btn_rev_{t_id}", use_container_width=True):
+                st.session_state.s2_selected_id = t_id
+                st.session_state.s2_selected_sub_tx = None
+                st.rerun()
 
     # ════════════════════════════════════════════════════════════════════
     #  CENTER PANEL — Deep Inspection, Routing Flow Table, XAI & Decisions
@@ -1509,7 +1389,7 @@ elif page == "Screen 2: Predictions & Feedback":
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTHORIZER DECISIONS PAGE
 # ══════════════════════════════════════════════════════════════════════════════
-elif page in ["Decisions", "Reviewed Transactions", "Authorizer Decisions"]:
+elif page in ["Decisions", "Authorizer Decisions"]:
     st.html(textwrap.dedent("""
     <div>
         <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0;">🏦 Authorizer Decisions & Audit History</h2>
@@ -1517,8 +1397,24 @@ elif page in ["Decisions", "Reviewed Transactions", "Authorizer Decisions"]:
             Full compliance ledger of all decisions rendered by the bank authorizer. Review notes, inspect approval/rejection trails, and revise decisions if needed.
         </div>
     </div>
-    <br>
     """))
+
+    sb_status = fraud_data.get_supabase_status()
+    sb_conn = sb_status.get("connected", False)
+    sb_color = "#10b981" if sb_conn else "#64748b"
+    sb_bg = "#ecfdf5" if sb_conn else "#f8fafc"
+    sb_border = "#a7f3d0" if sb_conn else "#e2e8f0"
+    sb_icon = "🟢 Supabase Cloud Active" if sb_conn else "⚪ Standby / Local Cache"
+    st.html(f"""
+    <div style="background:{sb_bg};border:1px solid {sb_border};border-radius:8px;padding:8px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-size:12px;color:#1e293b;">
+            <b>Database Engine:</b> {sb_status.get('provider')} &nbsp;|&nbsp; <b>Storage Source:</b> <code>{sb_status.get('decisions_source')}</code>
+        </div>
+        <div style="font-size:11px;font-weight:700;color:{sb_color};background:#ffffff;padding:3px 8px;border-radius:4px;border:1px solid {sb_border};">
+            {sb_icon}
+        </div>
+    </div>
+    """)
 
     all_decs = fraud_data.get_all_auditor_decisions()
     if not all_decs:
