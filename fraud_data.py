@@ -26,6 +26,10 @@ from sklearn.preprocessing import StandardScaler
 from huggingface_hub import hf_hub_download
 from supabase_client import supabase_mgr
 import database
+try:
+    import streamlit as st
+except ImportError:
+    st = None
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "Data")
@@ -206,7 +210,15 @@ class RealTimeStreamingEngine:
         self._load_state_from_disk()
 
     def _load_model(self):
-        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        token = None
+        if st is not None:
+            try:
+                if hasattr(st, "secrets"):
+                    token = st.secrets.get("HF_TOKEN") or st.secrets.get("hf_token")
+            except Exception:
+                pass
+        if not token:
+            token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         checkpoint_path = None
         if os.path.exists(RETRAINED_GAT_PATH):
             checkpoint_path = RETRAINED_GAT_PATH
@@ -279,21 +291,9 @@ class RealTimeStreamingEngine:
                 self._save_auditor_decisions_to_disk()
 
     def _load_raw_data(self):
-        # 1. Accounts Metadata
-        acc_file = os.path.join(DATA_DIR, "testing_accounts.csv")
-        if os.path.exists(acc_file):
-            df_a = pd.read_csv(acc_file)
-            for _, r in df_a.iterrows():
-                anum = str(r.get("Account Number", "")).strip()
-                if anum:
-                    self.acc_meta[anum] = {
-                        "bank_name": str(r.get("Bank Name", "Global Bank")),
-                        "bank_id": str(r.get("Bank ID", "BNK-001")),
-                        "account_number": anum,
-                        "entity_id": str(r.get("Entity ID", f"ENT-{anum[:8]}")),
-                        "entity_name": str(r.get("Entity Name", f"Account {anum}")),
-                    }
-        print(f"Loaded {len(self.acc_meta)} account profiles.")
+        # 1. Accounts Metadata (from Supabase 'accounts' table)
+        self.acc_meta = database.get_accounts()
+        print(f"Loaded {len(self.acc_meta)} account profiles from Supabase/database layer.")
 
         # 2. Transactions (prefer Supabase PostgreSQL table, fallback to local testing_trans.csv)
         df_t = database.get_transactions()
@@ -624,6 +624,21 @@ class RealTimeStreamingEngine:
         self.G.add_edge(from_acc, to_acc, key=tx_id, amount_usd=amt_paid_usd, raw_amount=amt_paid,
                         currency=pay_curr, format=pay_fmt, timestamp=str(ts),
                         edge_raw=edge_raw)
+
+        # Persist dynamic graph edge to Supabase graph_edges table
+        try:
+            database.save_graph_edge({
+                "tx_id": tx_id,
+                "from_account": from_acc,
+                "to_account": to_acc,
+                "amount": amt_paid_usd,
+                "currency": pay_curr,
+                "payment_format": pay_fmt,
+                "timestamp": str(ts),
+                "is_fanout": (curr_unique_recv >= 2)
+            })
+        except Exception:
+            pass
 
         # -------------------------------------------------------------------------
         # PURE GAT MODEL INFERENCE ON DYNAMIC GRAPH FORMED TILL NOW

@@ -23,6 +23,8 @@ venv.bak/
 # Secrets & Environment Variables
 .env
 .env.*
+.streamlit/secrets.toml
+secrets.toml
 
 # Hugging Face Cache Directories
 .cache/
@@ -45,6 +47,8 @@ gat_prediction_proof.txt
 
 # Local Runtime Streaming State
 live_stream_state.json
+Data/fanout_decisions.json
+Data/streaming_predictions_updated.json
 
 # OS generated files
 .DS_Store
@@ -52,5 +56,7 @@ Thumbs.db
 
 # Excluded Folders & Large Datasets
 Frontend/
+*.csv
+Data/*.csv
 Data/HI-Small_FANOUT_10M_accounts.csv
 Data/HI-Small_FANOUT_10M_test.csv

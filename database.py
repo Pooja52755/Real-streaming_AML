@@ -97,11 +97,39 @@ def is_connected() -> bool:
     return supabase_mgr.is_connected()
 
 
+def tables_exist() -> bool:
+    """
+    Returns True if Supabase tables exist and are ready.
+    """
+    return supabase_mgr.tables_exist()
+
+
 def get_status() -> Dict[str, Any]:
     """
     Returns current database connectivity and source status.
     """
     return supabase_mgr.get_status()
+
+
+def get_accounts() -> Dict[str, Dict[str, Any]]:
+    """
+    Retrieves account metadata directly from Supabase 'accounts' table.
+    """
+    return supabase_mgr.get_accounts()
+
+
+def get_graph_edges(account: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Retrieves dynamic graph edges from Supabase 'graph_edges' table.
+    """
+    return supabase_mgr.get_graph_edges(account=account)
+
+
+def save_graph_edge(edge_data: Dict[str, Any]) -> bool:
+    """
+    Persists a graph edge into Supabase 'graph_edges' table.
+    """
+    return supabase_mgr.save_graph_edge(edge_data=edge_data)
 
 
 def migrate_seed_data_to_supabase() -> int:

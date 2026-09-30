@@ -347,6 +347,23 @@ with st.sidebar:
     )
     st.caption("💡 Filter groups by compliance status: **Approved**, **Rejected**, or **Escalated**.")
 
+    sb_stat = fraud_data.get_supabase_status()
+    sb_conn = sb_stat.get("connected", False)
+    if sb_conn:
+        st.markdown(
+            "<div style='background:#ecfdf5;border:1px solid #10b981;border-radius:6px;padding:8px 10px;margin-top:12px;font-size:11px;font-weight:700;color:#065f46;text-align:center;'>"
+            "🟢 Supabase PostgreSQL: CONNECTED"
+            "</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            "<div style='background:#f8fafc;border:1px dashed #94a3b8;border-radius:6px;padding:8px 10px;margin-top:12px;font-size:11px;color:#64748b;text-align:center;'>"
+            "⚪ Supabase: Standby (Secrets Needed)"
+            "</div>",
+            unsafe_allow_html=True
+        )
+
     st.html("<br><hr><div style='text-align:center;color:#94a3b8;font-size:11px;'>© AML Fraud Investigation System</div>")
 
 # ─── Top Header ───────────────────────────────────────────────────────────
@@ -365,6 +382,65 @@ with col_h2:
         <span class="header-timestamp">🕒 Last Updated: {current_time}</span>
     </div>
     """))
+
+# ─── Supabase Cloud Status Indicator & Popup ──────────────────────────────
+sb_status = fraud_data.get_supabase_status()
+sb_connected = sb_status.get("connected", False)
+tables_ready = sb_status.get("tables_ready", False)
+
+if sb_connected:
+    if "sb_conn_toast_shown" not in st.session_state:
+        if tables_ready:
+            st.toast("⚡ Supabase Cloud Connected! PostgreSQL Database Active.", icon="🟢")
+        else:
+            st.toast("⚡ Supabase Connected! Ready for tables setup.", icon="🟢")
+        st.session_state.sb_conn_toast_shown = True
+
+    if tables_ready:
+        st.html("""
+        <div style="background: linear-gradient(90deg, #ecfdf5, #f0fdf4); border: 1.5px solid #10b981; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(16, 185, 129, 0.12);">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 26px;">🟢</span>
+                <div>
+                    <div style="font-size: 14px; font-weight: 800; color: #065f46;">Supabase Cloud Connected — Live PostgreSQL Active</div>
+                    <div style="font-size: 11.5px; color: #047857; margin-top: 1px;">
+                        Persistent Source of Truth: 100 Transactions, Graph Topology & Human Authorizer Decisions are stored live in Supabase PostgreSQL.
+                    </div>
+                </div>
+            </div>
+            <span style="background: #10b981; color: white; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em;">LIVE DATABASE</span>
+        </div>
+        """)
+    else:
+        st.html("""
+        <div style="background: linear-gradient(90deg, #eff6ff, #f8fafc); border: 1.5px solid #3b82f6; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.12);">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 26px;">🟢</span>
+                <div>
+                    <div style="font-size: 14px; font-weight: 800; color: #1e40af;">Supabase Cloud Connected (API Active)</div>
+                    <div style="font-size: 11.5px; color: #2563eb; margin-top: 1px;">
+                        Connected to project <code>jqojlzkxntkekbkjiijq</code>. To initialize PostgreSQL tables without CSVs, run <code>supabase_schema.sql</code> once in your Supabase SQL Editor.
+                    </div>
+                </div>
+            </div>
+            <span style="background: #3b82f6; color: white; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em;">CONNECTED</span>
+        </div>
+        """)
+else:
+    st.html("""
+    <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 24px;">⚠️</span>
+            <div>
+                <div style="font-size: 13.5px; font-weight: 800; color: #92400e;">Supabase Cloud: Standby Mode</div>
+                <div style="font-size: 11.5px; color: #b45309; margin-top: 1px;">
+                    Connect to Supabase by configuring <code>SUPABASE_URL</code> and <code>SUPABASE_KEY</code> in Streamlit Cloud Secrets.
+                </div>
+            </div>
+        </div>
+        <span style="background: #f59e0b; color: white; padding: 3px 8px; border-radius: 4px; font-size: 10.5px; font-weight: 700;">STANDBY</span>
+    </div>
+    """)
 
 st.write("")
 

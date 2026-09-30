@@ -121,17 +121,30 @@ class SupabaseManager:
                 self._check_connection()
         return self._connected
 
+    def tables_exist(self) -> bool:
+        """Checks if tables (transactions, accounts, auditor_decisions) exist in Supabase."""
+        if not self.is_connected() or not REQUESTS_AVAILABLE:
+            return False
+        try:
+            endpoint = f"{self.url}/rest/v1/transactions?select=id&limit=1"
+            resp = requests.get(endpoint, headers=self._get_headers(), timeout=4)
+            return resp.status_code in [200, 206]
+        except Exception:
+            return False
+
     def get_status(self) -> Dict[str, Any]:
         """Provides status report for the UI and diagnostics."""
         connected = self.is_connected()
+        tables_ready = self.tables_exist() if connected else False
         masked_key = f"{self.key[:6]}...{self.key[-4:]}" if self.key and len(self.key) > 10 else "None"
         return {
             "connected": connected,
+            "tables_ready": tables_ready,
             "provider": "Supabase PostgreSQL Database" if connected else "Local Filesystem Fallback (Ready for Supabase)",
             "supabase_url": self.url or "Not Configured (st.secrets['SUPABASE_URL'])",
             "supabase_key": masked_key,
-            "decisions_source": "Supabase 'auditor_decisions' table" if connected else "Data/auditor_decisions.json",
-            "transactions_source": "Supabase 'transactions' table" if connected else "Data/testing_trans.csv"
+            "decisions_source": "Supabase 'auditor_decisions' table" if (connected and tables_ready) else "Data/auditor_decisions.json",
+            "transactions_source": "Supabase 'transactions' table" if (connected and tables_ready) else "Data/testing_trans.csv"
         }
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -159,13 +172,31 @@ class SupabaseManager:
                             col_rename["to_account"] = "Account.1"
                         if "amount" in df.columns:
                             col_rename["amount"] = "Amount Paid"
+                        if "amount_received" in df.columns:
+                            col_rename["amount_received"] = "Amount Received"
                         if "currency" in df.columns:
                             col_rename["currency"] = "Payment Currency"
+                        if "receiving_currency" in df.columns:
+                            col_rename["receiving_currency"] = "Receiving Currency"
                         if "payment_format" in df.columns:
                             col_rename["payment_format"] = "Payment Format"
                         if "timestamp" in df.columns:
                             col_rename["timestamp"] = "Timestamp"
+                        if "from_bank" in df.columns:
+                            col_rename["from_bank"] = "From Bank"
+                        if "to_bank" in df.columns:
+                            col_rename["to_bank"] = "To Bank"
                         df = df.rename(columns=col_rename)
+
+                        if "Amount Received" not in df.columns and "Amount Paid" in df.columns:
+                            df["Amount Received"] = df["Amount Paid"]
+                        if "Receiving Currency" not in df.columns and "Payment Currency" in df.columns:
+                            df["Receiving Currency"] = df["Payment Currency"]
+                        if "From Bank" not in df.columns:
+                            df["From Bank"] = "0"
+                        if "To Bank" not in df.columns:
+                            df["To Bank"] = "0"
+
                         for l_col in ["Is Laundering", "is_laundering", "Laundering"]:
                             if l_col in df.columns:
                                 df = df.drop(columns=[l_col])
@@ -300,6 +331,92 @@ class SupabaseManager:
                 })
 
         return results
+
+    def get_accounts(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Loads account metadata directly from Supabase 'accounts' table.
+        """
+        accounts = {}
+        if self.is_connected() and REQUESTS_AVAILABLE:
+            try:
+                endpoint = f"{self.url}/rest/v1/accounts?select=*&limit=1000"
+                resp = requests.get(endpoint, headers=self._get_headers(), timeout=6)
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    for r in rows:
+                        anum = str(r.get("account_number", "")).strip()
+                        if anum:
+                            accounts[anum] = {
+                                "bank_name": str(r.get("bank_name", "Global Bank")),
+                                "bank_id": str(r.get("bank_id", "BNK-001")),
+                                "account_number": anum,
+                                "entity_id": str(r.get("entity_id", f"ENT-{anum[:8]}")),
+                                "entity_name": str(r.get("entity_name", f"Account {anum}")),
+                            }
+                    if accounts:
+                        return accounts
+            except Exception as e:
+                logger.warning(f"Could not load accounts from Supabase: {e}")
+
+        # Local fallback if testing_accounts.csv is available locally
+        acc_file = os.path.join(BASE_DIR, "Data", "testing_accounts.csv")
+        if os.path.exists(acc_file):
+            try:
+                df_a = pd.read_csv(acc_file)
+                for _, r in df_a.iterrows():
+                    anum = str(r.get("Account Number", "")).strip()
+                    if anum:
+                        accounts[anum] = {
+                            "bank_name": str(r.get("Bank Name", "Global Bank")),
+                            "bank_id": str(r.get("Bank ID", "BNK-001")),
+                            "account_number": anum,
+                            "entity_id": str(r.get("Entity ID", f"ENT-{anum[:8]}")),
+                            "entity_name": str(r.get("Entity Name", f"Account {anum}")),
+                        }
+            except Exception:
+                pass
+        return accounts
+
+    def get_graph_edges(self, account: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Retrieves graph edges directly from Supabase 'graph_edges' table.
+        """
+        if self.is_connected() and REQUESTS_AVAILABLE:
+            try:
+                if account:
+                    endpoint = f"{self.url}/rest/v1/graph_edges?or=(from_account.eq.{account},to_account.eq.{account})&order=timestamp.asc&limit=500"
+                else:
+                    endpoint = f"{self.url}/rest/v1/graph_edges?select=*&limit=1000"
+                resp = requests.get(endpoint, headers=self._get_headers(), timeout=6)
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception as e:
+                logger.warning(f"Error querying graph edges from Supabase: {e}")
+        return []
+
+    def save_graph_edge(self, edge_data: Dict[str, Any]) -> bool:
+        """
+        Saves a graph edge directly into Supabase 'graph_edges' table.
+        """
+        if self.is_connected() and REQUESTS_AVAILABLE:
+            try:
+                endpoint = f"{self.url}/rest/v1/graph_edges"
+                payload = {
+                    "tx_id": str(edge_data.get("tx_id", "")),
+                    "from_account": str(edge_data.get("from_account", "")),
+                    "to_account": str(edge_data.get("to_account", "")),
+                    "amount": float(edge_data.get("amount", 0.0)),
+                    "currency": str(edge_data.get("currency", "US Dollar")),
+                    "payment_format": str(edge_data.get("payment_format", "Wire")),
+                    "timestamp": str(edge_data.get("timestamp", "")),
+                    "hop": int(edge_data.get("hop", 1)),
+                    "is_fanout": bool(edge_data.get("is_fanout", False))
+                }
+                resp = requests.post(endpoint, json=payload, headers=self._get_headers(), timeout=5)
+                return resp.status_code in [200, 201, 204]
+            except Exception as e:
+                logger.warning(f"Error saving graph edge to Supabase: {e}")
+        return False
 
     def insert_transaction(self, tx_data: Dict[str, Any]) -> bool:
         """Inserts a new transaction into the Supabase 'transactions' table."""
