@@ -832,7 +832,7 @@ class RealTimeStreamingEngine:
                     f"Fan-Out pattern detected: 1 sender ({from_acc}) -> {curr_unique_recv} unique receivers",
                     f"{curr_out_cnt} outgoing transactions recorded in this fan-out cluster",
                     f"Total fan-out outgoing volume: {format_currency(src_prof['total_outgoing_amount'], pay_curr)}",
-                    f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob:.6f})",
+                    f"GAT Graph Attention Network (PyG): {risk_tier.upper()} (Risk Score: {risk_score}/100)",
                 ] + xai_drivers
 
                 if investigation_id not in self.investigations:
@@ -1205,14 +1205,18 @@ class RealTimeStreamingEngine:
         dec_list.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return dec_list
 
-    def run_overnight_retraining(self, epochs: int = 8, lr: float = 0.001) -> Dict[str, Any]:
+    def run_overnight_retraining(self, epochs: int = 8, lr: float = 0.001, min_decisions: int = 50) -> Dict[str, Any]:
         """
         Executes overnight retraining using accumulated human authorizer feedback.
         Fine-tunes the GAT model, logs training loss progression, compares before vs. after metrics,
-        and saves retrained checkpoint to backend/GAT/gat_aml_retrained.pt.
+        saves retrained checkpoint to backend/GAT/gat_aml_retrained.pt, and pushes to Hugging Face Hub.
+        Requires at least min_decisions (default 50) human authorizer verdicts to trigger.
         """
         if self.model is None:
             return {"status": "error", "message": "GAT model is offline"}
+
+        # Refresh decisions from Supabase / database layer
+        self.auditor_decisions = database.get_auditor_decisions()
 
         samples = []
         for target_id, d_info in self.auditor_decisions.items():
@@ -1252,7 +1256,17 @@ class RealTimeStreamingEngine:
         if not samples:
             return {
                 "status": "error",
-                "message": "No authorizer feedback records found in auditor_decisions.json. Review transactions on Screen 2 to submit human decisions before running overnight retraining."
+                "message": "No authorizer feedback records found in Supabase/auditor_decisions. Review transactions to submit human decisions before running overnight retraining."
+            }
+
+        if len(samples) < min_decisions:
+            msg = f"Retraining threshold not met: currently {len(samples)} decisions available, minimum {min_decisions} required. Retraining skipped."
+            print(f"[OVERNIGHT_RETRAINING] {msg}")
+            return {
+                "status": "skipped",
+                "message": msg,
+                "total_samples": len(samples),
+                "threshold": min_decisions
             }
 
         criterion = nn.BCEWithLogitsLoss()
@@ -1349,6 +1363,40 @@ class RealTimeStreamingEngine:
             "post_recall": round(post_rec, 1),
             "model_path": RETRAINED_GAT_PATH,
         }
+
+        # Upload retrained weights to Hugging Face Hub so deployed apps on Streamlit Cloud stay updated
+        hf_token = None
+        if st is not None:
+            try:
+                if hasattr(st, "secrets"):
+                    hf_token = st.secrets.get("HF_TOKEN") or st.secrets.get("hf_token")
+            except Exception:
+                pass
+        if not hf_token:
+            hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+
+        hf_upload_success = False
+        hf_upload_msg = "No Hugging Face token provided"
+        if hf_token and os.path.exists(RETRAINED_GAT_PATH):
+            try:
+                from huggingface_hub import HfApi
+                api = HfApi()
+                api.upload_file(
+                    path_or_fileobj=RETRAINED_GAT_PATH,
+                    path_in_repo=HF_MODEL_FILENAME,
+                    repo_id=HF_REPO_ID,
+                    token=hf_token,
+                    commit_message=f"Overnight fine-tuning update ({len(samples)} decisions, post_loss: {post_loss:.4f})"
+                )
+                hf_upload_success = True
+                hf_upload_msg = f"Pushed to Hugging Face ({HF_REPO_ID}/{HF_MODEL_FILENAME})"
+                print(f"[HF_SYNC] {hf_upload_msg}")
+            except Exception as hf_err:
+                hf_upload_msg = f"Hugging Face upload failed: {hf_err}"
+                print(f"[HF_SYNC_ERROR] {hf_upload_msg}")
+
+        report["huggingface_uploaded"] = hf_upload_success
+        report["huggingface_status"] = hf_upload_msg
 
         try:
             history = []
@@ -1942,8 +1990,8 @@ def get_all_auditor_decisions():
 def get_model_registry():
     return _engine.get_model_registry()
 
-def run_overnight_retraining(epochs=8, lr=0.001):
-    return _engine.run_overnight_retraining(epochs=epochs, lr=lr)
+def run_overnight_retraining(epochs=8, lr=0.001, min_decisions=0):
+    return _engine.run_overnight_retraining(epochs=epochs, lr=lr, min_decisions=min_decisions)
 
 def get_retraining_history():
     return _engine.get_retraining_history()
@@ -1975,45 +2023,21 @@ def get_stream_status():
     }
 
 # ---------------------------------------------------------
-# APSCHEDULER BACKGROUND RETRAINING SCHEDULER
+# GITHUB ACTIONS OVERNIGHT RETRAINING AUTOMATION PIPELINE
 # ---------------------------------------------------------
-_scheduler = None
-if APSCHEDULER_AVAILABLE:
-    try:
-        _scheduler = BackgroundScheduler(daemon=True)
-        # Configured to run overnight retraining at 02:00 (2:00 AM) daily
-        _scheduler.add_job(
-            func=lambda: _engine.run_overnight_retraining() if _engine else None,
-            trigger="cron",
-            hour=2,
-            minute=0,
-            id="overnight_retraining_job",
-            name="Overnight Retraining Batch",
-            replace_existing=True
-        )
-        _scheduler.start()
-    except Exception as e:
-        print(f"APScheduler initialization: {e}")
-
 def get_scheduler_status() -> Dict[str, Any]:
-    if _scheduler is not None and _scheduler.running:
-        job = _scheduler.get_job("overnight_retraining_job")
-        next_run = str(job.next_run_time) if job and job.next_run_time else "Scheduled daily at 02:00 AM"
-        return {
-            "status": "Active (Running)",
-            "schedule": "Daily at 02:00 AM (Night)",
-            "next_run": next_run,
-            "job_id": "overnight_retraining_job"
-        }
     return {
-        "status": "Configured (Manual / Standby)",
-        "schedule": "Daily at 02:00 AM (Night)",
-        "next_run": "02:00 AM Tonight",
-        "job_id": "overnight_retraining_job"
+        "engine": "GitHub Actions Scheduled Workflow",
+        "workflow_file": ".github/workflows/overnight_retrain.yml",
+        "schedule": "Daily at 02:00 AM IST (20:30 UTC)",
+        "cron": "30 20 * * *",
+        "threshold": "≥ 50 Audited Decisions Required",
+        "sync_target": f"Hugging Face Hub ({HF_REPO_ID})",
+        "status": "Configured in GitHub Actions"
     }
 
-def trigger_scheduled_retraining_now():
-    return _engine.run_overnight_retraining()
+def trigger_scheduled_retraining_now(epochs=8, lr=0.001, min_decisions=50):
+    return _engine.run_overnight_retraining(epochs=epochs, lr=lr, min_decisions=min_decisions)
 
 def get_supabase_status() -> Dict[str, Any]:
     return supabase_mgr.get_status()

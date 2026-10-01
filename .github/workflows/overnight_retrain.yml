@@ -1,0 +1,49 @@
+name: Overnight GAT Retraining Pipeline
+
+on:
+  schedule:
+    # 02:00 AM IST Daily (20:30 UTC)
+    - cron: '30 20 * * *'
+  workflow_dispatch:
+    inputs:
+      min_decisions:
+        description: 'Minimum human authorizer decisions threshold to trigger retraining'
+        required: false
+        default: '50'
+      epochs:
+        description: 'Number of fine-tuning epochs'
+        required: false
+        default: '8'
+
+jobs:
+  overnight-retrain:
+    name: Overnight Retrain & Sync to Hugging Face
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install PyTorch CPU & PyTorch Geometric
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch-geometric
+
+      - name: Install Project Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Execute Overnight Retraining Job
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scripts/retrain_job.py --min_decisions ${{ github.event.inputs.min_decisions || '50' }} --epochs ${{ github.event.inputs.epochs || '8' }}

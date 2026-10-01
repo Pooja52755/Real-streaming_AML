@@ -746,7 +746,7 @@ if page == "Dashboard":
                 if "payment format" in e.lower() or "currency:" in e.lower():
                     continue
                 if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
-                    exps_clean.append(f"GAT Graph Attention Network (PyG): {risk.upper()} (Risk Score: {risk_score}/100 · Raw GAT Sigmoid: {gat_prob_str})")
+                    exps_clean.append(f"GAT Graph Attention Network (PyG): {risk.upper()} (Risk Score: {risk_score}/100)")
                 else:
                     exps_clean.append(e)
             exps_html = "".join([f"<li>{e}</li>" for e in exps_clean])
@@ -1638,10 +1638,10 @@ elif page == "Overnight Retraining":
     <div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:14px 18px;margin-bottom:16px;">
         <div style="font-size:13px;font-weight:700;color:#1e40af;">📌 Mentor Architecture Overview: Overnight Retraining</div>
         <div style="font-size:12px;color:#1e3a8a;margin-top:4px;line-height:1.6;">
-            1. Predictions are generated on transactions (Screen 2).<br>
-            2. Authorised bank compliance officers review flagged and benign transactions and record authoritative ground-truth verdicts.<br>
-            3. Overnight, this batch fine-tunes the PyTorch Geometric GAT model using <code>BCEWithLogitsLoss</code> and Adam optimization.<br>
-            4. The fine-tuned weights are saved to <code>backend/GAT/gat_aml_retrained.pt</code> and deployed for enhanced precision.
+            1. Predictions and risk scores are generated on incoming transactions.<br>
+            2. Authorised bank compliance officers review flagged transactions and record authoritative ground-truth verdicts.<br>
+            3. When at least 50 human authorizer decisions are accumulated, GitHub Actions triggers overnight retraining at 02:00 AM IST.<br>
+            4. The fine-tuned weights are saved to <code>backend/GAT/gat_aml_retrained.pt</code> and automatically synchronized to <b>Hugging Face Hub</b>.
         </div>
     </div>
     """)
@@ -1650,13 +1650,13 @@ elif page == "Overnight Retraining":
     st.html(f"""
     <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:12px 18px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
         <div>
-            <div style="font-size:12px;font-weight:700;color:#0f172a;">⏰ APScheduler Overnight Automation Daemon</div>
+            <div style="font-size:12px;font-weight:700;color:#0f172a;">⚡ GitHub Actions Overnight Retraining Pipeline</div>
             <div style="font-size:11.5px;color:#64748b;margin-top:2px;">
-                Engine Status: <b style="color:#059669;">{sched_info.get('status')}</b> &nbsp;|&nbsp; Schedule: <b>{sched_info.get('schedule')}</b> &nbsp;|&nbsp; Next Scheduled Run: <b>{sched_info.get('next_run')}</b>
+                Engine: <b>{sched_info.get('engine')}</b> &nbsp;|&nbsp; Schedule: <b>{sched_info.get('schedule')}</b> &nbsp;|&nbsp; Trigger: <b style="color:#0284c7;">{sched_info.get('threshold')}</b> &nbsp;|&nbsp; Sync: <b>{sched_info.get('sync_target')}</b>
             </div>
         </div>
         <div style="font-size:11px;background:#e0f2fe;color:#0369a1;padding:4px 10px;border-radius:6px;font-weight:600;">
-            CRON: 02:00 AM DAILY
+            CRON: 02:00 AM IST
         </div>
     </div>
     """)
