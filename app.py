@@ -1874,7 +1874,7 @@ elif page == "Graph Network":
             if "payment format" in e.lower() or "currency:" in e.lower():
                 continue
             if "risk probability" in e.lower() or "gat graph" in e.lower() or "neural network" in e.lower() or "ensemble" in e.lower():
-                tx_clean_exps.append(f"AI Ensemble (GAT Graph Attention + LightGBM Motif): {tx_risk.upper()} ({tx_score}% Confidence · Risk Score: {tx_score}/100)")
+                tx_clean_exps.append(f"GAT Graph Attention Network (PyG): {tx_risk.upper()} (Risk Score: {tx_score}/100)")
             else:
                 tx_clean_exps.append(e)
 
